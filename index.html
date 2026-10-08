@@ -3795,9 +3795,27 @@
                                     <td className="px-3 py-2.5">
                                       {s.candidateName ? (
                                         <div className="flex flex-col space-y-0.5">
-                                          <div className="flex items-center gap-2">
+                                          <div className="flex items-center gap-1.5 flex-wrap">
                                             <span className="font-semibold text-slate-900 dark:text-white">{s.candidateName}</span>
                                             {s.candidateNickname && <span className="text-[10px] text-slate-400">({s.candidateNickname})</span>}
+                                            {(() => {
+                                              const cand = candidatePool.find(c => c.assignedSlotId === s.slotId || (s.candidateName && c.fullName === s.candidateName));
+                                              const driveLink = s.resumeUrl || cand?.resumeUrl;
+                                              if (!driveLink) return null;
+                                              return (
+                                                <a
+                                                  href={driveLink}
+                                                  target="_blank"
+                                                  rel="noopener noreferrer"
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-sky-50 dark:bg-sky-950/70 text-sky-600 dark:text-sky-300 border border-sky-200 dark:border-sky-800 text-[9.5px] font-bold hover:bg-sky-100 transition shadow-2xs"
+                                                  title="เปิดดู Google Drive CV / Resume"
+                                                >
+                                                  <Icon name="link" className="w-2.5 h-2.5 text-sky-500" />
+                                                  <span>Drive / CV</span>
+                                                </a>
+                                              );
+                                            })()}
                                             <button
                                               onClick={() => setUnassignConfirmTarget(s)}
                                               className="p-1 rounded-md text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/50 text-[10px] font-bold"
