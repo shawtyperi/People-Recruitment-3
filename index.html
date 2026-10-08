@@ -810,16 +810,12 @@
         if (savedSession) {
           try {
             const parsed = JSON.parse(savedSession);
-            return parsed;
+            if (parsed && parsed.email && parsed.email.toLowerCase().endsWith(ALLOWED_CORPORATE_DOMAIN)) {
+              return parsed;
+            }
           } catch (e) {}
         }
-        // ค่าเริ่มต้น Dev Mode: เข้าใช้งานในฐานะ แอดมินสูงสุด (Wanwisa)
-        return {
-          email: "wanwisa.ch@valuesourcing.co",
-          name: "wanwisa.ch@valuesourcing.co",
-          picture: "",
-          ...getUserRoleInfo("wanwisa.ch@valuesourcing.co")
-        };
+        return null;
       });
 
       const [currentView, setCurrentView] = useState("admin");
@@ -882,7 +878,7 @@
       };
 
       // Initialize Google Identity Services (GIS) Button
-      const initGoogleSignIn = () => {
+      const initGoogleSignIn = (targetId = "googleSignInBtnContainer") => {
         if (typeof window === "undefined") return;
 
         if (window.google && window.google.accounts && window.google.accounts.id) {
@@ -894,30 +890,47 @@
               cancel_on_tap_outside: true
             });
 
-            const btnContainer = document.getElementById("googleSignInBtnContainer");
-            if (btnContainer) {
-              btnContainer.innerHTML = "";
-              window.google.accounts.id.renderButton(btnContainer, {
-                theme: "outline",
-                size: "large",
-                width: 280,
-                text: "signin_with",
-                shape: "pill",
-                logo_alignment: "left"
-              });
-            }
+            const containers = [targetId, "googleSignInBtnContainer", "gateGoogleSignInBtn"];
+            containers.forEach(id => {
+              const el = document.getElementById(id);
+              if (el) {
+                el.innerHTML = "";
+                window.google.accounts.id.renderButton(el, {
+                  theme: "outline",
+                  size: "large",
+                  width: 280,
+                  text: "signin_with",
+                  shape: "pill",
+                  logo_alignment: "left"
+                });
+              }
+            });
           } catch (e) {
             console.warn("Google Sign-In Init Error:", e);
           }
         }
       };
 
+      // Ensure GIS button renders on Gate Screen when user is not logged in
+      useEffect(() => {
+        if (!currentUser) {
+          const tryInit = () => {
+            if (window.google && window.google.accounts && window.google.accounts.id) {
+              initGoogleSignIn("gateGoogleSignInBtn");
+            } else {
+              setTimeout(tryInit, 250);
+            }
+          };
+          tryInit();
+        }
+      }, [currentUser]);
+
       // Trigger GSI initialization whenever Login Modal opens
       useEffect(() => {
         if (showLoginModal) {
           setIsGsiLoading(true);
           const timer = setTimeout(() => {
-            initGoogleSignIn();
+            initGoogleSignIn("googleSignInBtnContainer");
             setIsGsiLoading(false);
           }, 300);
           return () => clearTimeout(timer);
@@ -2820,16 +2833,7 @@
                             <span className="hidden sm:inline">Public View</span>
                           </button>
                         )
-                      ) : (
-                        <button
-                          onClick={() => setShowLoginModal(true)}
-                          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 transition"
-                          title="สิทธิ์ผู้ดูแลระบบ"
-                        >
-                          <Icon name="lock" className="w-3.5 h-3.5 text-amber-600" />
-                          <span className="hidden sm:inline">ขอสิทธิ์ Admin</span>
-                        </button>
-                      )}
+                      ) : null}
 
                       <button
                         onClick={handleUserLogout}
@@ -2856,14 +2860,16 @@
                     </button>
                   )}
 
-                  <button
-                    onClick={() => setShowRequestModal(true)}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 sm:px-4 sm:py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-brand-600 to-sky-500 hover:from-brand-700 hover:to-sky-600 shadow-md shadow-brand-500/20 transition active:scale-95 cursor-pointer"
-                  >
-                    <Icon name="plus" className="w-4 h-4 text-white" />
-                    <span className="hidden sm:inline">+ New Requisition</span>
-                    <span className="sm:hidden">+ ขอกำลังคน</span>
-                  </button>
+                  {currentUser && (
+                    <button
+                      onClick={() => setShowRequestModal(true)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 sm:px-4 sm:py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-brand-600 to-sky-500 hover:from-brand-700 hover:to-sky-600 shadow-md shadow-brand-500/20 transition active:scale-95 cursor-pointer"
+                    >
+                      <Icon name="plus" className="w-4 h-4 text-white" />
+                      <span className="hidden sm:inline">+ New Requisition</span>
+                      <span className="sm:hidden">+ ขอกำลังคน</span>
+                    </button>
+                  )}
 
                   <button
                     onClick={handleCopyShareLink}
@@ -2880,8 +2886,50 @@
 
           <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
             
-            {/* KPI Cards - Soft Tone & Bilingual */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            {/* 🔒 Authentication Gate: ซ่อนข้อมูลทั้งหมดหากยังไม่ได้ล็อกอิน */}
+            {!currentUser ? (
+              <div className="min-h-[60vh] flex items-center justify-center py-12">
+                <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-3xl p-8 sm:p-10 text-center shadow-xl shadow-slate-900/5 space-y-6">
+                  
+                  <div className="w-16 h-16 rounded-3xl bg-brand-50 dark:bg-brand-950/70 border border-brand-200 dark:border-brand-800 text-brand-600 flex items-center justify-center mx-auto shadow-inner">
+                    <Icon name="lock" className="w-8 h-8 text-brand-600" />
+                  </div>
+
+                  <div className="space-y-2">
+                    <h2 className="text-xl font-extrabold text-slate-900 dark:text-white tracking-tight">
+                      Authentication Required
+                    </h2>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed max-w-xs mx-auto">
+                      กรุณาลงชื่อเข้าใช้ด้วยบัญชี Google ขององค์กรเพื่อเข้าถึงข้อมูลการสรรหาและจัดการกำลังพล
+                    </p>
+                  </div>
+
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                    <Icon name="shieldCheck" className="w-3.5 h-3.5 text-brand-600" />
+                    <span>เฉพาะอีเมล @valuesourcing.co เท่านั้น</span>
+                  </div>
+
+                  {/* Google Sign-In Button on Gate */}
+                  <div className="flex flex-col items-center justify-center min-h-[46px] pt-2">
+                    <div id="gateGoogleSignInBtn" className="flex justify-center"></div>
+                  </div>
+
+                  {loginError && (
+                    <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 text-xs font-semibold leading-relaxed text-center">
+                      {loginError}
+                    </div>
+                  )}
+
+                  <div className="pt-4 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400">
+                    Protected by Value Sourcing Identity Management
+                  </div>
+
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* KPI Cards - Soft Tone & Bilingual */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 shadow-xs flex items-center justify-between">
                 <div>
                   <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">Total Positions (อัตราทั้งหมด)</p>
@@ -4063,7 +4111,7 @@
                       </div>
 
                       {/* Candidate Pool Data Table */}
-                      <div className="overflow-x-auto max-h-[520px] overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-2xl w-full">
+                    <div className="overflow-x-auto max-h-[520px] overflow-y-auto border border-slate-200 dark:border-slate-800 rounded-2xl w-full">
                         <table className="w-full text-left text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap">
                           <thead className="bg-slate-100 dark:bg-slate-800 text-[10px] uppercase tracking-wider text-slate-600 dark:text-slate-400 sticky top-0 z-10 border-b border-slate-200 dark:border-slate-700">
                             <tr>
@@ -4185,6 +4233,8 @@
                   </div>
                 )}
               </div>
+            )}
+              </>
             )}
 
           </main>
