@@ -181,11 +181,21 @@
     const GOOGLE_SHEET_DIRECTORY_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1435033662";
     const GOOGLE_SHEET_CANDIDATES_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=546067727";
     const CANDIDATES_SHEET_EDIT_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=546067727#gid=546067727";
-    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbySLWGshJojbKAE89vMh7rPxWTYQvtb8CP0T3L3kBlq-HzIICBiWl0nc0xy7fcG-ObN4Q/exec";
+    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwLPy2xcpjlq04cEu0JZtPWdD6kTlJkrBWzyFYX7AKheUV4XbnOQk3Si6vUZlsYFbJIzA/exec";
 
     const cleanCandidateName = (fullName) => {
       if (!fullName) return "";
-      return String(fullName).trim().replace(/^(K\.?\s*)+/i, "");
+      return String(fullName)
+        .trim()
+        .replace(/^(K\.?\s*|คุณ\s*|นาย\s*|นางสาว\s*|นาง\s*)+/i, "")
+        .trim();
+    };
+
+    const isSameCandidate = (name1, name2) => {
+      if (!name1 || !name2) return false;
+      const clean1 = cleanCandidateName(name1).toLowerCase().replace(/\s+/g, '');
+      const clean2 = cleanCandidateName(name2).toLowerCase().replace(/\s+/g, '');
+      return clean1 === clean2 || clean1.includes(clean2) || clean2.includes(clean1);
     };
 
     const CANDIDATE_LEVELS = ["L1a", "L1b", "L2a", "L2b", "L3", "L4", "L5", "L6", "L7", "L8"];
@@ -670,30 +680,40 @@
     const INITIAL_CANDIDATE_POOL = [];
     const INITIAL_RECRUITMENT_DATA = [];
 
+    // Production: Auto-purge legacy development & test cache
+    try {
+      [
+        "hr_requests_v64", "hr_candidates_v64",
+        "hr_requests_v62", "hr_candidates_v62",
+        "hr_requests_prod_clean_v1", "hr_candidates_prod_clean_v1",
+        "hr_requests_demo", "hr_candidates_demo"
+      ].forEach(k => localStorage.removeItem(k));
+    } catch (e) {}
+
+    const PROD_REQUESTS_KEY = "hr_requests_prod_v1";
+    const PROD_CANDIDATES_KEY = "hr_candidates_prod_v1";
+    const PROD_PERSONNEL_KEY = "hr_personnel_prod_v1";
+
     function App() {
       const [requests, setRequests] = useState(() => {
-        const saved = localStorage.getItem("hr_requests_v64");
+        const saved = localStorage.getItem(PROD_REQUESTS_KEY);
         return saved ? JSON.parse(saved) : INITIAL_RECRUITMENT_DATA;
       });
 
       const [personnelList, setPersonnelList] = useState(() => {
-        const saved = localStorage.getItem("hr_personnel_v64");
+        const saved = localStorage.getItem(PROD_PERSONNEL_KEY);
         return saved ? JSON.parse(saved) : INITIAL_PERSONNEL_LIST;
       });
 
       const [candidatePool, setCandidatePool] = useState(() => {
-        const saved = localStorage.getItem("hr_candidates_v64");
+        const saved = localStorage.getItem(PROD_CANDIDATES_KEY);
         return saved ? JSON.parse(saved) : INITIAL_CANDIDATE_POOL;
       });
 
       const [googleScriptUrl, setGoogleScriptUrl] = useState(() => {
-        const targetUrl = "https://script.google.com/macros/s/AKfycbwfVec2cbvcPNC2KbckL17lNy6x1KOnfQSUd1LpLK2TJMb9Udq18F_YdPcpNxoCQ4RP2w/exec";
-        const saved = localStorage.getItem("hr_apps_script_url_v64");
-        if (!saved || saved.includes("AKfycbwfdg3PLNPbtKDaWEZ7aeU9MRur3jr7AeJ8wc")) {
-          localStorage.setItem("hr_apps_script_url_v64", targetUrl);
-          return targetUrl;
-        }
-        return saved;
+        const targetUrl = DEFAULT_APPS_SCRIPT_WEBAPP_URL;
+        localStorage.setItem("hr_apps_script_url_v64", targetUrl);
+        return targetUrl;
       });
 
       const [darkMode, setDarkMode] = useState(() => {
@@ -712,11 +732,11 @@
       }, [darkMode]);
 
       useEffect(() => {
-        localStorage.setItem("hr_requests_v64", JSON.stringify(requests));
+        localStorage.setItem(PROD_REQUESTS_KEY, JSON.stringify(requests));
       }, [requests]);
 
       useEffect(() => {
-        localStorage.setItem("hr_candidates_v64", JSON.stringify(candidatePool));
+        localStorage.setItem(PROD_CANDIDATES_KEY, JSON.stringify(candidatePool));
       }, [candidatePool]);
 
       // Real-time Background Polling & Manual Sync Function
@@ -809,7 +829,8 @@
         };
       }, [googleScriptUrl]);
 
-      // 🔐 Google Authentication & User Profile State
+      // 🔐 Production Google Authentication & User Profile State
+      // Defaults to null to enforce official corporate sign-in via Google Gatekeeper
       const [currentUser, setCurrentUser] = useState(() => {
         const savedSession = localStorage.getItem("vs_corporate_auth_token_v2");
         if (savedSession) {
@@ -1020,7 +1041,12 @@
           return;
         }
 
-        const updatedCand = { ...candidateEditForm };
+        const resolvedDrive = String(candidateEditForm.resumeUrl || candidateEditForm.driveUrl || "").trim();
+        const updatedCand = { 
+          ...candidateEditForm,
+          resumeUrl: resolvedDrive,
+          driveUrl: resolvedDrive
+        };
 
         // Update local Candidate Pool state
         setCandidatePool(prev => prev.map(c => 
@@ -1038,7 +1064,7 @@
                   candidateName: updatedCand.fullName,
                   candidateNickname: updatedCand.nickname,
                   candidatePhone: updatedCand.phone,
-                  resumeUrl: updatedCand.resumeUrl,
+                  resumeUrl: resolvedDrive,
                   hireDate: updatedCand.hireDate || s.hireDate
                 };
               }
@@ -1051,7 +1077,6 @@
         setSelectedCandidateDetail(updatedCand);
         setIsEditingCandidate(false);
 
-        // Two-Way Sync POST to Google Sheet
         try {
           if (googleScriptUrl) {
             await fetch(googleScriptUrl, {
@@ -1064,6 +1089,31 @@
                 candidate: updatedCand
               })
             });
+
+            // 🔄 ซิงค์ชื่อและลิงก์ Drive ไปยังแผ่นงานแบบขอกำลังคน (GID 1528284561)
+            if (updatedCand.assignedSlotId) {
+              await syncSlotToManpowerSheet({
+                slotId: updatedCand.assignedSlotId,
+                candidateName: updatedCand.fullName,
+                candidatePhone: updatedCand.phone,
+                resumeUrl: resolvedDrive
+              }, true);
+            }
+
+            // 🔄 หาก Candidate รายนี้อยู่ในสถานะ Closed หรือ Onboarded ให้ส่งลิงก์ Drive ไปอัปเดตชีท Closed (GID 396528947) ทันที
+            const matchingSlot = allPositionSlots.find(s => 
+              s.slotId === updatedCand.assignedSlotId || 
+              (s.candidateName && isSameCandidate(s.candidateName, updatedCand.fullName))
+            );
+            if (matchingSlot && (matchingSlot.slotStatus === "Closed" || matchingSlot.stage === "onboarded" || matchingSlot.stage === "cancelled")) {
+              await syncSlotToClosedSheet({
+                ...matchingSlot,
+                candidateName: updatedCand.fullName,
+                candidatePhone: updatedCand.phone,
+                resumeUrl: resolvedDrive
+              }, true);
+            }
+
             triggerToast(`บันทึกการแก้ไขคุณ ${updatedCand.fullName} สำเร็จ & ซิงค์ลง Google Sheet เรียบร้อย!`);
           } else {
             triggerToast(`บันทึกการแก้ไขคุณ ${updatedCand.fullName} สำเร็จ!`);
@@ -1569,7 +1619,7 @@
             const matchedCand = candidatePool.find(c => 
               (c.assignedSlotId && c.assignedSlotId === slot.slotId) || 
               (slot.candidateName && c.fullName && c.fullName.trim().toLowerCase() === slot.candidateName.trim().toLowerCase()) ||
-              (slot.candidateName && c.fullName && cleanCandidateName(c.fullName).toLowerCase() === cleanCandidateName(slot.candidateName).toLowerCase())
+              (slot.candidateName && c.fullName && isSameCandidate(c.fullName, slot.candidateName))
             );
             const interviewInfo = slot.interviewSchedule || matchedCand?.interviewDate || "";
             const currentEvals = slot.evaluations || [];
@@ -1613,6 +1663,7 @@
               candidatePhone: slot.candidatePhone || matchedCand?.phone || "",
               candidateNickname: slot.candidateNickname || matchedCand?.nickname || "",
               resumeUrl: resolvedDriveUrl,
+              driveUrl: resolvedDriveUrl,
               stage: effectiveStage,
               priority: slot.priority || r.priority || "NORMAL",
               offerSentDate: slot.offerSentDate || r.offerSentDate || "",
@@ -1916,6 +1967,14 @@
         setScheduleAssignModalData(null);
         setUnassignedInterviewSlotModal(null);
         triggerToast(`แมปคุณ ${candidate.fullName} เข้าสู่ Slot #${targetSlot.slotId} สำเร็จ`);
+
+        // 🔄 ส่งชื่อและลิงก์ Google Drive ไปลงบันทึกในแผ่นงาน "แบบขอกำลังคน" (GID 1528284561) ทันที
+        syncSlotToManpowerSheet({
+          ...targetSlot,
+          candidateName: candidate.fullName,
+          candidatePhone: candidate.phone,
+          resumeUrl: candidate.resumeUrl
+        }, true);
       };
 
       const handleSendITNotification = async (slotItem) => {
@@ -2152,88 +2211,130 @@
         triggerToast("💻 อัปเดตสถานะความพร้อมอุปกรณ์ IT เรียบร้อยแล้ว");
       };
 
-      // ฟังก์ชันยืนยันพนักงานมาเริ่มงาน / เข้าอบรมวันแรก พร้อมปรับสถานะเป็น Closed (ปิดการสรรหา) ทันทีอัตโนมัติ
-      const handleConfirmFirstDayTraining = (slotId) => {
-        const targetSlot = allPositionSlots.find(s => s.slotId === slotId);
-        const duration = targetSlot ? getRecruitmentDurationInfo(targetSlot.requestDate, targetSlot.hireDate, targetSlot.lastUpdated) : { totalDays: 0 };
+      // ฟังก์ชันส่งข้อมูล Slot ที่ Closed ไปบันทึกลง Google Sheet แผ่นงาน Closed (GID 396528947) พร้อมลิงก์ Drive
+      const syncSlotToClosedSheet = async (slotItem, silent = false) => {
+        if (!slotItem) return;
+        const targetUrl = googleScriptUrl || DEFAULT_APPS_SCRIPT_WEBAPP_URL;
 
-        // ค้นหาลิงก์ Google Drive ของผู้สมัครเพื่อส่งเข้า Sheet Closed
-        const matchedCand = candidatePool.find(c => 
-          (c.assignedSlotId && c.assignedSlotId === slotId) || 
-          (targetSlot?.candidateName && c.fullName && cleanCandidateName(c.fullName).toLowerCase() === cleanCandidateName(targetSlot.candidateName).toLowerCase())
+        const cand = candidatePool.find(c => 
+          (c.assignedSlotId && (c.assignedSlotId === slotItem.slotId || c.assignedSlotId === slotItem.parentRequestId)) || 
+          (slotItem.candidateName && c.fullName && isSameCandidate(c.fullName, slotItem.candidateName)) ||
+          (slotItem.candidateNickname && c.nickname && c.nickname.trim() === slotItem.candidateNickname.trim())
         );
-        const driveUrlToSend = targetSlot?.resumeUrl || matchedCand?.resumeUrl || matchedCand?.driveUrl || "";
 
-        // 🔄 ซิงค์บันทึกข้อมูลเข้า Sheet "Closed" (GID 396528947) อัตโนมัติพร้อมลิงก์ Drive
-        if (googleScriptUrl && targetSlot) {
-          fetch(googleScriptUrl, {
+        const resolvedDrive = String(slotItem.resumeUrl || slotItem.driveUrl || cand?.resumeUrl || cand?.driveUrl || "").trim();
+        const candidateName = slotItem.candidateName || cand?.fullName || "";
+        const candidatePhone = slotItem.candidatePhone || cand?.phone || "-";
+        const hireDate = slotItem.hireDate || cand?.hireDate || new Date().toISOString().split('T')[0];
+        const duration = getRecruitmentDurationInfo(slotItem.requestDate, hireDate, slotItem.lastUpdated);
+
+        try {
+          await fetch(targetUrl, {
             method: "POST",
             mode: "no-cors",
             headers: { "Content-Type": "text/plain" },
             body: JSON.stringify({
               action: "archiveClosedSlot",
               sheetGid: "396528947",
-              slotId: targetSlot.slotId,
-              reqId: targetSlot.parentRequestId || targetSlot.id,
-              requestDate: targetSlot.requestDate,
-              hireDate: targetSlot.hireDate || new Date().toISOString().split('T')[0],
+              slotId: slotItem.slotId,
+              reqId: slotItem.parentRequestId || slotItem.id,
+              requestDate: slotItem.requestDate,
+              hireDate: hireDate,
               totalDays: duration.totalDays,
-              jobTitle: targetSlot.jobTitle,
-              department: targetSlot.department,
-              candidateName: targetSlot.candidateName,
-              candidatePhone: targetSlot.candidatePhone,
-              workLocation: targetSlot.workLocation || targetSlot.branch || "Dusit Central Park",
-              arrivalStatus: "arrived_reported",
-              interviewScore: targetSlot.interviewScore,
-              interviewScorePercent: targetSlot.interviewScorePercent,
-              interviewResult: targetSlot.interviewResult,
-              requesterName: targetSlot.requesterName,
-              remark: targetSlot.rejectionReason || "เข้าอบรมวันแรกเรียบร้อยแล้ว",
-              driveUrl: driveUrlToSend,
-              resumeUrl: driveUrlToSend
+              jobTitle: slotItem.jobTitle,
+              department: slotItem.department,
+              candidateName: candidateName,
+              candidatePhone: candidatePhone,
+              workLocation: slotItem.workLocation || cand?.branch || slotItem.branch || "Dusit Central Park",
+              arrivalStatus: slotItem.onboardingArrivalStatus || "arrived_reported",
+              interviewScore: slotItem.interviewScore || "",
+              interviewScorePercent: slotItem.interviewScorePercent || 0,
+              interviewResult: slotItem.interviewResult || "",
+              requesterName: slotItem.requesterName || "",
+              remark: slotItem.rejectionReason || "ปิดการสรรหาเรียบร้อยแล้ว (Closed)",
+              driveUrl: resolvedDrive,
+              resumeUrl: resolvedDrive
             })
-          }).catch(err => console.error("Error archiving to closed sheet:", err));
+          });
+
+          if (!silent) {
+            triggerToast(`✅ ซิงค์ Slot #${slotItem.slotId} พร้อมลิงก์ Drive ลง Sheet Closed สำเร็จ!`);
+          }
+        } catch (err) {
+          if (!silent) triggerToast("❌ เกิดข้อผิดพลาดในการซิงค์: " + (err.message || err));
+        }
+      };
+
+      // 🔄 ฟังก์ชันส่งชื่อผู้สมัครและลิงก์ Google Drive ไปบันทึกลงแผ่นงาน "แบบขอกำลังคน" (GID 1528284561)
+      const syncSlotToManpowerSheet = async (slotItem, silent = false) => {
+        if (!slotItem) return;
+        if (!googleScriptUrl) {
+          if (!silent) triggerToast("⚠️ กรุณาระบุ Google Apps Script Web App URL ก่อน");
+          return;
         }
 
-        setRequests(prev => prev.map(r => {
-          if (!r.slots) return r;
-          let hasSlot = false;
-          const slots = r.slots.map(s => {
-            if (s.slotId === slotId) {
-              hasSlot = true;
-              return {
-                ...s,
-                hasAttendedFirstDayTraining: true,
-                onboardingArrivalStatus: "arrived_reported",
-                slotStatus: "Closed",
-                resumeUrl: s.resumeUrl || driveUrlToSend
-              };
-            }
-            return s;
+        const cand = candidatePool.find(c => 
+          (c.assignedSlotId && c.assignedSlotId === slotItem.slotId) || 
+          (slotItem.candidateName && c.fullName && cleanCandidateName(c.fullName).toLowerCase() === cleanCandidateName(slotItem.candidateName).toLowerCase())
+        );
+
+        const resolvedDrive = slotItem.resumeUrl || cand?.resumeUrl || cand?.driveUrl || "";
+        const candidateName = slotItem.candidateName || cand?.fullName || "";
+        const candidatePhone = slotItem.candidatePhone || cand?.phone || "";
+
+        try {
+          await fetch(googleScriptUrl, {
+            method: "POST",
+            mode: "no-cors",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "updateRequisitionCandidate",
+              sheetGid: "1528284561",
+              slotId: slotItem.slotId,
+              reqId: slotItem.parentRequestId || slotItem.id,
+              id: slotItem.parentRequestId || slotItem.id,
+              candidateName: candidateName,
+              candidatePhone: candidatePhone,
+              jobTitle: slotItem.jobTitle,
+              department: slotItem.department,
+              driveUrl: resolvedDrive,
+              resumeUrl: resolvedDrive
+            })
           });
-          if (!hasSlot) return r;
 
-          const allClosed = slots.every(s => s.slotStatus === "Closed" || s.stage === "onboarded" || s.stage === "cancelled");
-          return {
-            ...r,
-            requestStatus: allClosed ? "Closed" : r.requestStatus,
-            slots,
-            lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
-          };
-        }));
+          if (!silent) {
+            triggerToast(`✅ ซิงค์ลิงก์ Drive ของ K. ${candidateName} ลง Sheet แบบขอกำลังคน (GID 1528284561) เรียบร้อย!`);
+          }
+        } catch (err) {
+          if (!silent) triggerToast("❌ เกิดข้อผิดพลาดในการซิงค์: " + (err.message || err));
+        }
+      };
 
-        setSelectedDetailSlot(prev => {
-          if (!prev || prev.slotId !== slotId) return prev;
-          return {
-            ...prev,
-            hasAttendedFirstDayTraining: true,
-            onboardingArrivalStatus: "arrived_reported",
-            slotStatus: "Closed",
-            resumeUrl: prev.resumeUrl || driveUrlToSend
-          };
-        });
+      // 🔄 ซิงค์ทุกลิงก์ Drive ของตำแหน่งที่มีผู้สมัครลง Sheet แบบขอกำลังคน (GID 1528284561)
+      const handleSyncAllManpowerToSheet = async () => {
+        const slotsWithCandidates = allPositionSlots.filter(s => s.candidateName);
+        if (slotsWithCandidates.length === 0) {
+          triggerToast("ไม่มีตำแหน่งที่มีรายชื่อผู้สมัครให้ซิงค์");
+          return;
+        }
+        triggerToast(`⏳ กำลังซิงค์ลิงก์ Drive ทั้งหมด (${slotsWithCandidates.length} รายการ) ลง Sheet แบบขอกำลังคน...`);
+        for (const s of slotsWithCandidates) {
+          await syncSlotToManpowerSheet(s, true);
+        }
+        triggerToast(`🎉 ซิงค์ผู้สมัครและลิงก์ Drive ทุกรายการลง Sheet แบบขอกำลังคน (GID 1528284561) เรียบร้อย!`);
+      };
 
-        triggerToast("🎉 ยืนยันพนักงานมาเริ่มงานเรียบร้อยแล้ว & บันทึกลง Sheet Closed (GID 396528947) สำเร็จ");
+      // ซิงค์ทุกรายการใน Closed ลง Sheet Closed (GID 396528947)
+      const handleSyncAllClosedToSheet = async () => {
+        if (closedSlots.length === 0) {
+          triggerToast("ไม่มีรายการ Closed ให้ซิงค์");
+          return;
+        }
+        triggerToast(`⏳ กำลังซิงค์ ${closedSlots.length} รายการพร้อมลิงก์ Drive เข้า Sheet Closed...`);
+        for (const s of closedSlots) {
+          await syncSlotToClosedSheet(s, true);
+        }
+        triggerToast(`🎉 ซิงค์รายการ Closed ทั้งหมด (${closedSlots.length} รายการ) ลง Sheet Closed (GID 396528947) เรียบร้อย!`);
       };
 
       // อัปเดต Priority ของ Slot แบบระบุเองได้
@@ -2259,20 +2360,38 @@
           }
         }
 
+        // 🔄 หากปรับสถานะเป็น Closed ให้ซิงค์ลง Sheet Closed (GID 396528947) และ Sheet ขอกำลังคน (GID 1528284561) อัตโนมัติทันที
+        if (newStatus === "Closed" && slotItem) {
+          const matchedCand = candidatePool.find(c => 
+            (c.assignedSlotId && c.assignedSlotId === slotItem.slotId) || 
+            (slotItem.candidateName && c.fullName && cleanCandidateName(c.fullName).toLowerCase() === cleanCandidateName(slotItem.candidateName).toLowerCase())
+          );
+          const resolvedDrive = slotItem.resumeUrl || matchedCand?.resumeUrl || matchedCand?.driveUrl || "";
+          const resolvedName = slotItem.candidateName || matchedCand?.fullName || "";
+          const resolvedPhone = slotItem.candidatePhone || matchedCand?.phone || "";
+
+          const fullClosedItem = {
+            ...slotItem,
+            slotStatus: "Closed",
+            candidateName: resolvedName,
+            candidatePhone: resolvedPhone,
+            resumeUrl: resolvedDrive
+          };
+
+          syncSlotToClosedSheet(fullClosedItem, true);
+          if (resolvedName) {
+            syncSlotToManpowerSheet(fullClosedItem, true);
+          }
+        }
+
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
-          let hasSlot = false;
           const updatedSlots = r.slots.map(s => {
             if (s.slotId === slotId) {
-              hasSlot = true;
               return { ...s, slotStatus: newStatus };
             }
             return s;
           });
-
-          if (!hasSlot) return r;
-
-          // If all slots in this request are Closed, close the parent request
           const allClosed = updatedSlots.every(s => s.slotStatus === "Closed" || s.stage === "onboarded" || s.stage === "cancelled");
           return {
             ...r,
@@ -2282,21 +2401,12 @@
           };
         }));
 
-        triggerToast(`อัปเดต Slot #${slotId} เป็น ${newStatus}`);
+        triggerToast(`ปรับสถานะ Slot #${slotId} เป็น ${newStatus}`);
       };
 
-      // Handling Onboarding Arrival Status Change with Locking
       const handleUpdateOnboardingArrivalStatus = (slotId, newArrivalStatus) => {
-        const slotItem = allPositionSlots.find(s => s.slotId === slotId);
-        
-        // Once locked as declined_noshow, prevent change
-        if (slotItem?.onboardingArrivalStatus === "declined_noshow") {
-          triggerToast("🔒 สถานะนี้ถูกล็อกเป็น 'สละสิทธิ์ / ไม่มาเริ่มงาน' แล้ว ไม่สามารถเปลี่ยนกลับได้");
-          return;
-        }
-
-        // If user selects declined_noshow, trigger mandatory reason modal
         if (newArrivalStatus === "declined_noshow") {
+          const slotItem = allPositionSlots.find(s => s.slotId === slotId);
           setRejectionModalData({ slotId, slotItem, isArrivalDecline: true });
           setRejectionReasonInput(slotItem?.rejectionReason || "");
           return;
@@ -2304,58 +2414,97 @@
 
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
-          const updatedSlots = r.slots.map(s => {
+          const slots = r.slots.map(s => {
             if (s.slotId === slotId) {
               return { ...s, onboardingArrivalStatus: newArrivalStatus };
             }
             return s;
           });
-          return { ...r, slots: updatedSlots };
+          return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
 
-        if (selectedDetailSlot && selectedDetailSlot.slotId === slotId) {
-          setSelectedDetailSlot(prev => ({ ...prev, onboardingArrivalStatus: newArrivalStatus }));
-        }
-
-        const label = ONBOARDING_ARRIVAL_STATUSES.find(o => o.id === newArrivalStatus)?.label || newArrivalStatus;
-        triggerToast(`อัปเดตสถานะการมารายงานตัว: ${label}`);
+        setSelectedDetailSlot(prev => prev?.slotId === slotId ? { ...prev, onboardingArrivalStatus: newArrivalStatus } : prev);
+        triggerToast(`อัปเดตสถานะการมารายงานตัวของ Slot #${slotId} เรียบร้อย`);
       };
-      const handleInitiateStageChange = (targetSlotId, targetStage) => {
-        const slotItem = allPositionSlots.find(s => s.slotId === targetSlotId);
 
-        // Guard: Prevent dragging unapproved requests out of "Request Received"
-        const wfStatus = slotItem?.workflowStatus || slotItem?.slotStatus || "PENDING_ADMIN";
-        const isStillPending = wfStatus === "PENDING_ADMIN" || wfStatus === "PENDING_APPROVER" || wfStatus === "PENDING_IT";
-        if (isStillPending && targetStage !== "received") {
-          const statusLabels = {
-            "PENDING_ADMIN": "รอ Admin ตรวจสอบ",
-            "PENDING_APPROVER": "รอผู้อนุมัติยืนยัน",
-            "PENDING_IT": "รอ IT จัดเตรียมอุปกรณ์"
+      // ฟังก์ชันยืนยันพนักงานมาเริ่มงาน / เข้าอบรมวันแรก พร้อมปรับสถานะเป็น Closed (ปิดการสรรหา) ทันทีอัตโนมัติ
+      const handleConfirmFirstDayTraining = (slotId) => {
+        const targetSlot = allPositionSlots.find(s => s.slotId === slotId);
+
+        // ค้นหาลิงก์ Google Drive และชื่อของผู้สมัครจาก Candidate Pool เพื่อส่งเข้า Sheet Closed และแบบขอกำลังคน
+        const matchedCand = candidatePool.find(c => 
+          (c.assignedSlotId && c.assignedSlotId === slotId) || 
+          (targetSlot?.candidateName && c.fullName && cleanCandidateName(c.fullName).toLowerCase() === cleanCandidateName(targetSlot.candidateName).toLowerCase())
+        );
+        const driveUrlToSend = targetSlot?.resumeUrl || matchedCand?.resumeUrl || matchedCand?.driveUrl || "";
+        const candidateNameToSend = targetSlot?.candidateName || matchedCand?.fullName || "";
+        const candidatePhoneToSend = targetSlot?.candidatePhone || matchedCand?.phone || "-";
+        const hireDateToSend = targetSlot?.hireDate || matchedCand?.hireDate || new Date().toISOString().split('T')[0];
+
+        const payloadToSync = {
+          ...targetSlot,
+          candidateName: candidateNameToSend,
+          candidatePhone: candidatePhoneToSend,
+          resumeUrl: driveUrlToSend,
+          hireDate: hireDateToSend,
+          slotStatus: "Closed",
+          hasAttendedFirstDayTraining: true,
+          onboardingArrivalStatus: "arrived_reported"
+        };
+
+        // 🔄 ซิงค์บันทึกข้อมูลเข้า Sheet "Closed" (GID 396528947) อัตโนมัติทันที
+        syncSlotToClosedSheet(payloadToSync, true);
+
+        // 🔄 ซิงค์ชื่อและลิงก์ Drive เข้าแผ่นงาน "แบบขอกำลังคน" (GID 1528284561) อัตโนมัติทันที
+        if (candidateNameToSend) {
+          syncSlotToManpowerSheet(payloadToSync, true);
+        }
+
+        setRequests(prev => prev.map(r => {
+          if (!r.slots) return r;
+          let hasSlot = false;
+          const slots = r.slots.map(s => {
+            if (s.slotId === slotId) {
+              hasSlot = true;
+              return {
+                ...s,
+                hasAttendedFirstDayTraining: true,
+                onboardingArrivalStatus: "arrived_reported",
+                slotStatus: "Closed",
+                candidateName: candidateNameToSend,
+                candidatePhone: candidatePhoneToSend,
+                resumeUrl: s.resumeUrl || driveUrlToSend,
+                hireDate: hireDateToSend
+              };
+            }
+            return s;
+          });
+          if (!hasSlot) return r;
+
+          const allClosed = slots.every(s => s.slotStatus === "Closed" || s.stage === "onboarded" || s.stage === "cancelled");
+          return {
+            ...r,
+            requestStatus: allClosed ? "Closed" : r.requestStatus,
+            slots,
+            lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
           };
-          triggerToast(`⚠️ คำขอนี้ยังอยู่ระหว่าง${statusLabels[wfStatus] || wfStatus} กรุณาดำเนินการอนุมัติให้เป็น READY_FOR_RECRUITMENT ก่อนย้ายสเตจ`);
-          return;
-        }
+        }));
 
-        // Requirement: Candidate Check for Interview Stage
-        if (targetStage === "interview" && (!slotItem?.candidateName || !slotItem.candidateName.trim())) {
-          setUnassignedInterviewSlotModal(slotItem);
-          return;
-        }
+        setSelectedDetailSlot(prev => {
+          if (!prev || prev.slotId !== slotId) return prev;
+          return {
+            ...prev,
+            hasAttendedFirstDayTraining: true,
+            onboardingArrivalStatus: "arrived_reported",
+            slotStatus: "Closed",
+            candidateName: candidateNameToSend,
+            candidatePhone: candidatePhoneToSend,
+            resumeUrl: prev.resumeUrl || driveUrlToSend,
+            hireDate: hireDateToSend
+          };
+        });
 
-        if (targetStage === "onboarded") {
-          const defaultDate = slotItem?.hireDate || new Date().toISOString().split('T')[0];
-          setOnboardModalData({ slotId: targetSlotId, slotItem });
-          setOnboardHireDateInput(defaultDate);
-          return;
-        }
-
-        if (targetStage === "cancelled") {
-          setRejectionModalData({ slotId: targetSlotId, slotItem, isArrivalDecline: false });
-          setRejectionReasonInput(slotItem?.rejectionReason || "");
-          return;
-        }
-
-        updateSlotStageDirectly(targetSlotId, targetStage);
+        triggerToast(`🎉 ยืนยันพนักงานมาเริ่มงานเรียบร้อยแล้ว & ซิงค์ข้อมูล K. ${candidateNameToSend} พร้อมลิงก์ Drive ลง Google Sheet เรียบร้อย!`);
       };
 
       // Individual Slot Onboard Confirmation
@@ -2368,18 +2517,21 @@
         // ค้นหาลิงก์ Drive ของผู้สมัคร
         const matchedCand = candidatePool.find(c => 
           c.assignedSlotId === slotId || 
-          (slotItem?.candidateName && c.fullName && cleanCandidateName(c.fullName).toLowerCase() === cleanCandidateName(slotItem.candidateName).toLowerCase())
+          (slotItem?.candidateName && c.fullName && isSameCandidate(c.fullName, slotItem.candidateName))
         );
         const resolvedDriveUrl = slotItem?.resumeUrl || matchedCand?.resumeUrl || matchedCand?.driveUrl || "";
+        const candidateName = slotItem?.candidateName || matchedCand?.fullName || "";
+        const candidatePhone = slotItem?.candidatePhone || matchedCand?.phone || "";
 
         // 1. Update Candidate Pool
         setCandidatePool(prev => prev.map(c => {
-          if (c.assignedSlotId === slotId || (slotItem?.candidateName && c.fullName === slotItem.candidateName)) {
+          if (c.assignedSlotId === slotId || (candidateName && isSameCandidate(c.fullName, candidateName))) {
             return {
               ...c,
               hireDate: hireDate,
               status: "Hiring / Offer",
-              resumeUrl: c.resumeUrl || resolvedDriveUrl
+              resumeUrl: c.resumeUrl || resolvedDriveUrl,
+              driveUrl: c.driveUrl || resolvedDriveUrl
             };
           }
           return c;
@@ -2398,7 +2550,10 @@
                 stage: "onboarded",
                 slotStatus: "Closed",
                 hireDate: hireDate,
+                candidateName: candidateName,
+                candidatePhone: candidatePhone,
                 resumeUrl: s.resumeUrl || resolvedDriveUrl,
+                driveUrl: s.driveUrl || resolvedDriveUrl,
                 onboardingArrivalStatus: s.onboardingArrivalStatus || "pending_arrival"
               };
             }
@@ -2416,37 +2571,19 @@
           };
         }));
 
-        // 🔄 บันทึกซิงค์ข้อมูลลง Sheet Closed (GID 396528947) อัตโนมัติ
-        if (googleScriptUrl && slotItem) {
-          const duration = getRecruitmentDurationInfo(slotItem.requestDate, hireDate, slotItem.lastUpdated);
-          fetch(googleScriptUrl, {
-            method: "POST",
-            mode: "no-cors",
-            headers: { "Content-Type": "text/plain" },
-            body: JSON.stringify({
-              action: "archiveClosedSlot",
-              sheetGid: "396528947",
-              slotId: slotId,
-              reqId: slotItem.parentRequestId || slotItem.id,
-              requestDate: slotItem.requestDate,
-              hireDate: hireDate,
-              totalDays: duration.totalDays,
-              jobTitle: slotItem.jobTitle,
-              department: slotItem.department,
-              candidateName: slotItem.candidateName,
-              candidatePhone: slotItem.candidatePhone,
-              workLocation: slotItem.workLocation || slotItem.branch || "Dusit Central Park",
-              arrivalStatus: "pending_arrival",
-              interviewScore: slotItem.interviewScore,
-              interviewScorePercent: slotItem.interviewScorePercent,
-              interviewResult: slotItem.interviewResult,
-              requesterName: slotItem.requesterName,
-              remark: "รับเข้าทำงาน (Onboarded)",
-              driveUrl: resolvedDriveUrl,
-              resumeUrl: resolvedDriveUrl
-            })
-          }).catch(err => console.error("Error archiving to closed sheet:", err));
-        }
+        const payloadToSync = {
+          ...slotItem,
+          slotId: slotId,
+          candidateName: candidateName,
+          candidatePhone: candidatePhone,
+          resumeUrl: resolvedDriveUrl,
+          driveUrl: resolvedDriveUrl,
+          hireDate: hireDate,
+          slotStatus: "Closed",
+          onboardingArrivalStatus: "pending_arrival"
+        };
+
+        syncSlotToClosedSheet(payloadToSync, true);
 
         setOnboardModalData(null);
         triggerToast(`🎉 รับเข้าทำงาน Slot #${slotId} เรียบร้อย! ซิงค์ลง Sheet Closed (GID 396528947) พร้อมลิงก์ Drive`);
@@ -2557,6 +2694,35 @@
         }));
 
         triggerToast(`อัปเดต Slot #${targetSlotId} เป็น ${targetStage}`);
+      };
+
+      // Stage Transition Gatekeeper (Trigger Modals for Interview / Onboarded / Cancelled)
+      const handleInitiateStageChange = (slotId, targetStage) => {
+        const slotItem = allPositionSlots.find(s => s.slotId === slotId);
+        if (!slotItem) return;
+
+        // If moving to interview stage but candidate has not been assigned yet
+        if (targetStage === "interview" && !slotItem.candidateName) {
+          setUnassignedInterviewSlotModal(slotItem);
+          return;
+        }
+
+        // If moving to onboarded stage -> open Hire Date modal
+        if (targetStage === "onboarded") {
+          setOnboardModalData({ slotId, slotItem });
+          setOnboardHireDateInput(slotItem.hireDate || new Date().toISOString().split('T')[0]);
+          return;
+        }
+
+        // If moving to cancelled stage -> open Rejection Reason modal
+        if (targetStage === "cancelled") {
+          setRejectionModalData({ slotId, slotItem, isArrivalDecline: false });
+          setRejectionReasonInput(slotItem.rejectionReason || "");
+          return;
+        }
+
+        // Otherwise, perform direct stage update
+        updateSlotStageDirectly(slotId, targetStage);
       };
 
       const handleFormSubmit = (e) => {
@@ -3690,6 +3856,17 @@
                         </div>
 
                         <div className="flex items-center gap-2">
+                          <a
+                            href="https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=1528284561#gid=1528284561"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 font-semibold text-xs flex items-center gap-1 transition"
+                            title="เปิดดู Google Sheet แผ่นงาน แบบขอกำลังคน (GID 1528284561)"
+                          >
+                            <span>เปิด Sheet ขอกำลังคน</span>
+                            <Icon name="link" className="w-3 h-3 text-brand-600" />
+                          </a>
+
                           <button
                             onClick={exportToCSV}
                             className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-md flex items-center gap-1.5 transition"
@@ -3701,30 +3878,47 @@
                       </div>
 
                       {/* Tab Selection: In Process vs Closed */}
-                      <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2">
-                        <button
-                          onClick={() => setManpowerTableTab("in_process")}
-                          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                            manpowerTableTab === "in_process"
-                              ? "bg-amber-500 text-white shadow-sm"
-                              : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200"
-                          }`}
-                        >
-                          <span>In Progress</span>
-                          <span className="px-1.5 py-0.2 rounded-full bg-black/20 text-[10px]">{inProcessSlots.length}</span>
-                        </button>
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800 pb-2">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setManpowerTableTab("in_process")}
+                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                              manpowerTableTab === "in_process"
+                                ? "bg-amber-500 text-white shadow-sm"
+                                : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                            }`}
+                          >
+                            <span>In Progress</span>
+                            <span className="px-1.5 py-0.2 rounded-full bg-black/20 text-[10px]">{inProcessSlots.length}</span>
+                          </button>
 
-                        <button
-                          onClick={() => setManpowerTableTab("closed")}
-                          className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                            manpowerTableTab === "closed"
-                              ? "bg-emerald-600 text-white shadow-sm"
-                              : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200"
-                          }`}
-                        >
-                          <span>Closed</span>
-                          <span className="px-1.5 py-0.2 rounded-full bg-black/20 text-[10px]">{closedSlots.length}</span>
-                        </button>
+                          <button
+                            onClick={() => setManpowerTableTab("closed")}
+                            className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                              manpowerTableTab === "closed"
+                                ? "bg-emerald-600 text-white shadow-sm ring-2 ring-emerald-500/20"
+                                : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200"
+                            }`}
+                          >
+                            <span>Closed (ปิดการสรรหาแล้ว)</span>
+                            <span className="px-1.5 py-0.2 rounded-full bg-black/20 text-[10px]">{closedSlots.length}</span>
+                          </button>
+                        </div>
+
+                        {manpowerTableTab === "closed" && (
+                          <div className="flex items-center gap-2">
+                            <a
+                              href="https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=396528947#gid=396528947"
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-3 py-1 rounded-xl bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 dark:hover:bg-sky-900 text-sky-700 dark:text-sky-300 border border-sky-300 dark:border-sky-700 font-bold text-[11px] flex items-center gap-1 transition shadow-2xs"
+                              title="เปิดดู Google Sheet แผ่นงาน Closed (GID 396528947)"
+                            >
+                              <span>เปิด Sheet Closed (GID 396528947)</span>
+                              <Icon name="link" className="w-3 h-3 text-sky-600" />
+                            </a>
+                          </div>
+                        )}
                       </div>
 
                       {/* Manpower Request Data Table */}
@@ -3763,13 +3957,18 @@
                                 const isDeclinedOrCancelled = s.stage === "cancelled" || s.onboardingArrivalStatus === "declined_noshow";
 
                                 const rowHighlightClass = isDeclinedOrCancelled
-                                  ? "bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100/80 transition"
+                                  ? "bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100/80 transition cursor-pointer"
                                   : isArrivedSuccess
-                                  ? "bg-emerald-50/70 dark:bg-emerald-950/40 hover:bg-emerald-100/80 transition"
-                                  : "hover:bg-slate-50/80 dark:hover:bg-slate-800/40";
+                                  ? "bg-emerald-50/70 dark:bg-emerald-950/40 hover:bg-emerald-100/80 transition cursor-pointer"
+                                  : "hover:bg-slate-50/80 dark:hover:bg-slate-800/40 cursor-pointer";
 
                                 return (
-                                  <tr key={s.slotId} className={rowHighlightClass}>
+                                  <tr 
+                                    key={s.slotId} 
+                                    className={rowHighlightClass}
+                                    onClick={() => setSelectedDetailSlot(s)}
+                                    title="คลิกเพื่อดูข้อมูลและลิงก์รายละเอียดทั้งหมด"
+                                  >
                                     <td className="px-3 py-2.5 font-semibold text-slate-900 dark:text-white">
                                       <span className="text-brand-600 font-bold">{s.slotId}</span>
                                       <div className="text-[10px] text-slate-400">{s.requestDate}</div>
@@ -7312,30 +7511,63 @@
                     </div>
                   )}
 
-                  {/* Google Drive Document Link Box in Detail Modal */}
-                  {selectedDetailSlot.resumeUrl && (
-                    <div className="p-3.5 rounded-2xl bg-gradient-to-r from-sky-50 to-indigo-50 dark:from-sky-950/50 dark:to-indigo-950/50 border border-sky-300 dark:border-sky-800 flex items-center justify-between gap-3 shadow-2xs">
-                      <div className="min-w-0 flex-1">
-                        <span className="text-[10px] uppercase font-extrabold text-sky-700 dark:text-sky-300 tracking-wider flex items-center gap-1">
-                          <Icon name="link" className="w-3 h-3 text-sky-600" />
-                          <span>GOOGLE DRIVE DOCUMENT (CV / RESUME)</span>
-                        </span>
-                        <p className="text-xs text-slate-600 dark:text-slate-300 font-mono truncate mt-0.5" title={selectedDetailSlot.resumeUrl}>
-                          {selectedDetailSlot.resumeUrl}
-                        </p>
+                  {/* Google Drive Document Link Box in Detail Modal - รองรับการคลิกดูและการแนบลิงก์ */}
+                  {(() => {
+                    const cand = candidatePool.find(c => 
+                      (c.assignedSlotId && c.assignedSlotId === selectedDetailSlot.slotId) || 
+                      (selectedDetailSlot.candidateName && c.fullName && cleanCandidateName(c.fullName).toLowerCase() === cleanCandidateName(selectedDetailSlot.candidateName).toLowerCase())
+                    );
+                    const currentDriveLink = selectedDetailSlot.resumeUrl || cand?.resumeUrl || cand?.driveUrl || "";
+
+                    return (
+                      <div className="p-4 rounded-2xl bg-gradient-to-r from-sky-50 via-indigo-50/60 to-purple-50/50 dark:from-sky-950/50 dark:via-indigo-950/40 dark:to-purple-950/40 border-2 border-sky-300 dark:border-sky-700 shadow-sm space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10.5px] uppercase font-extrabold text-sky-800 dark:text-sky-300 tracking-wider flex items-center gap-1.5">
+                            <Icon name="link" className="w-3.5 h-3.5 text-sky-600" />
+                            <span>GOOGLE DRIVE CV / RESUME LINK (เอกสารสมัครงาน)</span>
+                          </span>
+                          {currentDriveLink && (
+                            <span className="px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200 font-bold text-[10px]">
+                              ✓ มีลิงก์เอกสารแล้ว
+                            </span>
+                          )}
+                        </div>
+
+                        {currentDriveLink ? (
+                          <div className="space-y-2 pt-1">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-white dark:bg-slate-800/90 p-3 rounded-xl border border-sky-200 dark:border-sky-800">
+                              <p className="text-xs text-slate-700 dark:text-slate-200 font-mono truncate max-w-sm" title={currentDriveLink}>
+                                🔗 {currentDriveLink}
+                              </p>
+                              <a
+                                href={currentDriveLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs shadow-md shadow-sky-500/20 transition shrink-0 active:scale-95 cursor-pointer"
+                              >
+                                <Icon name="link" className="w-3.5 h-3.5 text-white" />
+                                <span>📄 เปิดดูเอกสารใน Drive (คลิก) &rarr;</span>
+                              </a>
+                            </div>
+
+                            <div className="flex items-center justify-between pt-1 border-t border-sky-200/80 dark:border-sky-800/80 text-[10px] text-slate-500">
+                              <span>⚡ ระบบซิงค์ข้อมูลผู้สมัครและลิงก์ Google Drive ลง Google Sheet อัตโนมัติแบบเรียลไทม์</span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="p-3 rounded-xl bg-white/80 dark:bg-slate-800/80 border border-amber-200 dark:border-amber-800/60 text-slate-600 dark:text-slate-300 text-[11px] space-y-1">
+                            <p className="text-amber-800 dark:text-amber-300 font-semibold">
+                              ⚠️ ยังไม่มีการระบุลิงก์ Google Drive สำหรับตำแหน่งนี้
+                            </p>
+                            <p className="text-[10px] text-slate-400">
+                              สามารถแก้ไขและเพิ่มลิงก์ Google Drive ในหน้า Candidate Pool เพื่อให้ระบบส่งเข้า Sheet Closed อัตโนมัติได้ครับ
+                            </p>
+                          </div>
+                        )}
                       </div>
-                      <a
-                        href={selectedDetailSlot.resumeUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs shadow-md transition shrink-0 active:scale-95"
-                      >
-                        <Icon name="link" className="w-3.5 h-3.5 text-white" />
-                        <span>เปิดดู Drive &rarr;</span>
-                      </a>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {/* Total Recruitment Duration Banner in Detail Modal for Closed Slots */}
                   {(selectedDetailSlot.slotStatus === "Closed" || selectedDetailSlot.stage === "onboarded" || selectedDetailSlot.stage === "cancelled") && (() => {
