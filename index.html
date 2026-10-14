@@ -7902,6 +7902,127 @@
                     </div>
                   )}
 
+                  {/* 🌟 กล่องข้อมูลแคนดิเดตและการนัดหมายสัมภาษณ์ ย้ายขึ้นมาแสดงด้านบนสุด */}
+                  {selectedDetailSlot.candidateName ? (
+                    <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 space-y-2.5 shadow-xs">
+                      <div className="flex items-center justify-between">
+                        <p className="font-bold text-emerald-900 dark:text-emerald-200 text-sm flex items-center gap-1.5">
+                          <span>👤</span>
+                          <span>แคนดิเดต: {selectedDetailSlot.candidateName}</span>
+                        </p>
+                        {isAdminAuthenticated && (
+                          <button
+                            onClick={() => {
+                              const slot = selectedDetailSlot;
+                              setSelectedDetailSlot(null);
+                              setUnassignConfirmTarget(slot);
+                            }}
+                            className="text-[10.5px] font-bold text-rose-600 hover:text-rose-700 hover:underline"
+                          >
+                            ถอดออกจากตำแหน่ง
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-emerald-700 dark:text-emerald-300 font-medium">📞 {selectedDetailSlot.candidatePhone || "-"}</p>
+                      {selectedDetailSlot.interviewSchedule && (() => {
+                        const relTime = getInterviewRelativeTimeInfo(selectedDetailSlot.interviewSchedule);
+                        const googleMeetUrl = extractGoogleMeetUrl(selectedDetailSlot);
+                        return (
+                          <div className="mt-1 space-y-1.5">
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <p className="text-amber-800 dark:text-amber-300 font-semibold">📅 วันเวลานัดสัมภาษณ์: {selectedDetailSlot.interviewSchedule}</p>
+                              {relTime && selectedDetailSlot.stage === "interview" && (
+                                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] border ${relTime.badge}`}>
+                                  {relTime.ping && (
+                                    <span className="relative flex h-2 w-2">
+                                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${relTime.dotBg} opacity-75`}></span>
+                                      <span className={`relative inline-flex rounded-full h-2 w-2 ${relTime.dotBg}`}></span>
+                                    </span>
+                                  )}
+                                  <span>{relTime.text}</span>
+                                </span>
+                              )}
+                            </div>
+                            {googleMeetUrl && (
+                              <div className="pt-1">
+                                <a
+                                  href={googleMeetUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold transition shadow-xs cursor-pointer"
+                                  title="คลิกเพื่อเปิดห้องประชุม Google Meet ทันที"
+                                >
+                                  <Icon name="link" className="w-3.5 h-3.5 text-white" />
+                                  <span>เปิดเข้าห้องประชุม Google Meet ทันที &rarr;</span>
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
+                      {selectedDetailSlot.evaluationsCount > 0 && (
+                        <div className="mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800/80 space-y-1.5">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800 dark:text-slate-200">ผลประเมินสัมภาษณ์เฉลี่ยรวม ({selectedDetailSlot.evaluationsCount} ท่าน):</span>
+                            <span className={`px-2 py-0.5 rounded font-extrabold text-[10px] ${
+                              selectedDetailSlot.interviewResult === "Pass" ? "bg-emerald-600 text-white" : "bg-rose-600 text-white"
+                            }`}>
+                              {selectedDetailSlot.interviewResult} ({selectedDetailSlot.interviewScore}/5 - {selectedDetailSlot.interviewScorePercent}%)
+                            </span>
+                          </div>
+                          {isAdminAuthenticated && (
+                            <button
+                              onClick={() => {
+                                const s = selectedDetailSlot;
+                                setSelectedDetailSlot(null);
+                                setAdminAuditSlot(s);
+                              }}
+                              className="text-xs font-bold text-brand-600 hover:underline mt-1 block"
+                            >
+                              🔍 เปิดดู Audit Breakdown รายชื่อและคะแนนกรรมการทุกคน &rarr;
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Add Interview Evaluation Button in Slot Detail Modal (Strictly ONLY in Interview Stage - สำหรับทุกคนทั้ง User และ Admin) */}
+                      {selectedDetailSlot.stage === "interview" && (
+                        <div className="mt-3 pt-2.5 border-t border-emerald-200/70 dark:border-emerald-800/70 flex items-center justify-between">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenBlindEvaluationModal(selectedDetailSlot)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-95 text-white font-bold text-xs shadow-xs transition cursor-pointer"
+                          >
+                            <Icon name="clipboardCheck" className="w-3.5 h-3.5 text-white" />
+                            <span>⭐ + บันทึกผลประเมินสัมภาษณ์</span>
+                          </button>
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {selectedDetailSlot.evaluationsCount > 0 ? `ประเมินแล้ว ${selectedDetailSlot.evaluationsCount} ท่าน` : "ยังไม่มีผู้ประเมิน"}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-center bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
+                      <p className="text-slate-400 italic text-xs">ยังไม่มีผู้สมัครจับคู่ในตำแหน่งนี้</p>
+                      {isAdminAuthenticated && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const slot = selectedDetailSlot;
+                            setSelectedDetailSlot(null);
+                            setUnassignedInterviewSlotModal(slot);
+                          }}
+                          className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs shadow-xs transition inline-flex items-center gap-1.5"
+                        >
+                          <span>👤 + เลือก Candidate สำหรับตำแหน่งนี้</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   {/* Google Drive Document Link Box in Detail Modal - รองรับการคลิกดูและการแนบลิงก์ */}
                   {(() => {
                     const cand = candidatePool.find(c => 
@@ -8475,123 +8596,6 @@
                           <Icon name="exclamation" className="w-4 h-4 text-rose-600" />
                           <span>สละสิทธิ์ / ไม่มาเริ่มงาน (ตำแหน่งถูกปิดเป็น Rejected/Cancelled พร้อมล็อกสถานะ)</span>
                         </div>
-                      )}
-                    </div>
-                  )}
-
-                  {selectedDetailSlot.candidateName ? (
-                    <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <p className="font-bold text-emerald-900 dark:text-emerald-200 text-sm">👤 แคนดิเดต: {selectedDetailSlot.candidateName}</p>
-                        {isAdminAuthenticated && (
-                          <button
-                            onClick={() => {
-                              const slot = selectedDetailSlot;
-                              setSelectedDetailSlot(null);
-                              setUnassignConfirmTarget(slot);
-                            }}
-                            className="text-[10px] font-bold text-rose-600 hover:underline"
-                          >
-                            ถอดออกจากตำแหน่ง
-                          </button>
-                        )}
-                      </div>
-                      <p className="text-emerald-700 dark:text-emerald-300">📞 {selectedDetailSlot.candidatePhone || "-"}</p>
-                      {selectedDetailSlot.interviewSchedule && (() => {
-                        const relTime = getInterviewRelativeTimeInfo(selectedDetailSlot.interviewSchedule);
-                        const googleMeetUrl = extractGoogleMeetUrl(selectedDetailSlot);
-                        return (
-                          <div className="mt-1 space-y-1.5">
-                            <div className="flex flex-wrap items-center justify-between gap-1.5">
-                              <p className="text-amber-800 dark:text-amber-300 font-semibold">📅 วันเวลานัดสัมภาษณ์: {selectedDetailSlot.interviewSchedule}</p>
-                              {relTime && selectedDetailSlot.stage === "interview" && (
-                                <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] border ${relTime.badge}`}>
-                                  {relTime.ping && (
-                                    <span className="relative flex h-2 w-2">
-                                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${relTime.dotBg} opacity-75`}></span>
-                                      <span className={`relative inline-flex rounded-full h-2 w-2 ${relTime.dotBg}`}></span>
-                                    </span>
-                                  )}
-                                  <span>{relTime.text}</span>
-                                </span>
-                              )}
-                            </div>
-                            {googleMeetUrl && (
-                              <div className="pt-1">
-                                <a
-                                  href={googleMeetUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-bold transition shadow-xs cursor-pointer"
-                                  title="คลิกเพื่อเปิดห้องประชุม Google Meet ทันที"
-                                >
-                                  <Icon name="link" className="w-3.5 h-3.5 text-white" />
-                                  <span>เปิดเข้าห้องประชุม Google Meet ทันที &rarr;</span>
-                                </a>
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })()}
-
-                      {selectedDetailSlot.evaluationsCount > 0 && (
-                        <div className="mt-3 pt-3 border-t border-emerald-200 dark:border-emerald-800/80 space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-slate-800 dark:text-slate-200">ผลประเมินสัมภาษณ์เฉลี่ยรวม ({selectedDetailSlot.evaluationsCount} ท่าน):</span>
-                            <span className={`px-2 py-0.5 rounded font-extrabold text-[10px] ${
-                              selectedDetailSlot.interviewResult === "Pass" ? "bg-emerald-600 text-white" : "bg-rose-600 text-white"
-                            }`}>
-                              {selectedDetailSlot.interviewResult} ({selectedDetailSlot.interviewScore}/5 - {selectedDetailSlot.interviewScorePercent}%)
-                            </span>
-                          </div>
-                          {isAdminAuthenticated && (
-                            <button
-                              onClick={() => {
-                                const s = selectedDetailSlot;
-                                setSelectedDetailSlot(null);
-                                setAdminAuditSlot(s);
-                              }}
-                              className="text-xs font-bold text-brand-600 hover:underline mt-1"
-                            >
-                              🔍 เปิดดู Audit Breakdown รายชื่อและคะแนนกรรมการทุกคน &rarr;
-                            </button>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Add Interview Evaluation Button in Slot Detail Modal (Strictly ONLY in Interview Stage - สำหรับทุกคนทั้ง User และ Admin) */}
-                      {selectedDetailSlot.stage === "interview" && (
-                        <div className="mt-3 pt-2.5 border-t border-emerald-200/70 dark:border-emerald-800/70 flex items-center justify-between">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenBlindEvaluationModal(selectedDetailSlot)}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-95 text-white font-bold text-xs shadow-xs transition cursor-pointer"
-                          >
-                            <Icon name="clipboardCheck" className="w-3.5 h-3.5 text-white" />
-                            <span>⭐ + บันทึกผลประเมินสัมภาษณ์</span>
-                          </button>
-                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
-                            {selectedDetailSlot.evaluationsCount > 0 ? `ประเมินแล้ว ${selectedDetailSlot.evaluationsCount} ท่าน` : "ยังไม่มีผู้ประเมิน"}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="p-4 text-center bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
-                      <p className="text-slate-400 italic text-xs">ยังไม่มีผู้สมัครจับคู่ในตำแหน่งนี้</p>
-                      {isAdminAuthenticated && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const slot = selectedDetailSlot;
-                            setSelectedDetailSlot(null);
-                            setUnassignedInterviewSlotModal(slot);
-                          }}
-                          className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs shadow-xs transition inline-flex items-center gap-1.5"
-                        >
-                          <span>👤 + เลือก Candidate สำหรับตำแหน่งนี้</span>
-                        </button>
                       )}
                     </div>
                   )}
