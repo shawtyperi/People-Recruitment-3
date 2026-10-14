@@ -523,7 +523,7 @@
       }, []);
 
       const filteredOptions = useMemo(() => {
-        if (!searchTerm.trim()) return normalizedOptions;
+        if (!searchTerm.trim() || searchTerm.trim() === "-") return normalizedOptions;
         const term = searchTerm.toLowerCase();
         return normalizedOptions.filter(o => 
           String(o.label).toLowerCase().includes(term) || String(o.value).toLowerCase().includes(term)
@@ -545,16 +545,21 @@
               required={required && !value}
               placeholder={placeholder}
               value={isOpen ? searchTerm : (selectedOption ? selectedOption.label : value || "")}
-              onFocus={() => {
+              onFocus={(e) => {
                 if (!disabled) {
                   setIsOpen(true);
-                  setSearchTerm("");
+                  setSearchTerm(value || "");
+                  try { e.target.select(); } catch (err) {}
                 }
               }}
               onChange={(e) => {
                 if (!disabled) {
-                  setSearchTerm(e.target.value);
+                  const val = e.target.value;
+                  setSearchTerm(val);
                   if (!isOpen) setIsOpen(true);
+                  if (val === "" || val === "-" || val.trim() === "-") {
+                    onChange("-");
+                  }
                 }
               }}
               className="w-full px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition shadow-2xs font-semibold pr-8 cursor-pointer text-slate-800 dark:text-slate-100 placeholder-slate-400"
@@ -830,7 +835,7 @@
       }, [googleScriptUrl]);
 
       // 🔐 Production Google Authentication & User Profile State
-      // Defaults to null to enforce official corporate sign-in via Google Gatekeeper
+      // Auto-login enabled for development mode (Super Admin: Wanwisa)
       const [currentUser, setCurrentUser] = useState(() => {
         const savedSession = localStorage.getItem("vs_corporate_auth_token_v2");
         if (savedSession) {
@@ -841,7 +846,15 @@
             }
           } catch (e) {}
         }
-        return null;
+        // Auto-login for Dev Mode: Default to Super Admin
+        const devRole = getUserRoleInfo(SUPER_ADMIN_EMAIL);
+        return {
+          email: SUPER_ADMIN_EMAIL,
+          name: "Wanwisa Chumthong",
+          picture: "",
+          token: "dev-session-token",
+          ...devRole
+        };
       });
 
       const [currentView, setCurrentView] = useState("admin");
@@ -852,6 +865,14 @@
       const [isGsiLoading, setIsGsiLoading] = useState(false);
 
       const isAdminAuthenticated = Boolean(currentUser && (currentUser.isAdmin || currentUser.isSuperAdmin));
+
+      // 🔒 สิทธิ์การมองเห็น: หากไม่ใช่แอดมิน ให้ล็อกหน้าจอให้อยู่ที่กระดาน Kanban Pipeline เท่านั้น
+      useEffect(() => {
+        if (!isAdminAuthenticated) {
+          setAdminSubTab("kanban");
+          setCurrentView("admin");
+        }
+      }, [isAdminAuthenticated]);
 
       // Handle Google Sign-in Callback from GIS SDK
       const handleGoogleCredentialResponse = (response) => {
@@ -889,13 +910,13 @@
           localStorage.setItem("vs_corporate_auth_token_v2", JSON.stringify(userProfile));
           setCurrentUser(userProfile);
           setShowLoginModal(false);
+          setCurrentView("admin");
 
           if (roleInfo.isAdmin) {
-            setCurrentView("admin");
             triggerToast(`👋 เข้าสู่ระบบสำเร็จ: ${userProfile.name} [${roleInfo.shortLabel}]`);
           } else {
-            setCurrentView("public");
-            triggerToast(`👋 เข้าสู่ระบบสำเร็จ: ${userProfile.name} (Staff View)`);
+            setAdminSubTab("kanban");
+            triggerToast(`👋 เข้าสู่ระบบสำเร็จ: ${userProfile.name} (โหมดกระดานสรรหาและร่วมประเมิน)`);
           }
         } catch (err) {
           console.error("Google Sign-In Error:", err);
@@ -1027,6 +1048,16 @@
       const [isEditingCandidate, setIsEditingCandidate] = useState(false);
       const [candidateEditForm, setCandidateEditForm] = useState(null);
       const [candidateToDelete, setCandidateToDelete] = useState(null);
+
+      // Inline and Modal Job Title Editing States
+      const [editingCardTitleSlotId, setEditingCardTitleSlotId] = useState(null);
+      const [editingCardTitleValue, setEditingCardTitleValue] = useState("");
+      const [isModalEditingTitle, setIsModalEditingTitle] = useState(false);
+      const [modalEditTitleValue, setModalEditTitleValue] = useState("");
+
+      // Admin Slot Deletion Modal State
+      const [slotToDelete, setSlotToDelete] = useState(null);
+      const [deletionReasonInput, setDeletionReasonInput] = useState("");
 
       const handleOpenCandidateDetail = (cand) => {
         setSelectedCandidateDetail(cand);
@@ -1592,8 +1623,8 @@
       // All position slots with individual slotStatus (Recruiting vs Closed)
       const allPositionSlots = useMemo(() => {
         return requests.flatMap(r => {
-          const headcount = Math.max(1, Number(r.headcountRequired) || 1);
-          const slots = (r.slots && r.slots.length === headcount) 
+          const headcount = Math.max(1, Number(r.headcountRequired) || (r.slots?.length || 1));
+          const slots = (r.slots && r.slots.length > 0) 
             ? r.slots 
             : Array.from({ length: headcount }, (_, i) => ({
                 slotId: `${r.id}-${i + 1}`,
@@ -1630,23 +1661,31 @@
               ? "declined_noshow"
               : (slot.onboardingArrivalStatus || r.onboardingArrivalStatus || "pending_arrival");
 
-            // Workflow status of requisition
-            const currentWorkflowStatus = slot.workflowStatus || r.workflowStatus || slot.slotStatus || r.requestStatus || "PENDING_ADMIN";
-            const isPendingApproval = currentWorkflowStatus === "PENDING_ADMIN" || 
-                                      currentWorkflowStatus === "PENDING_APPROVER" || 
-                                      currentWorkflowStatus === "PENDING_IT";
+            // Workflow status of requisition & slot
+            const slotWfStatus = slot.workflowStatus || slot.slotStatus || r.workflowStatus || r.requestStatus || "PENDING_ADMIN";
+            const isSlotApproved = slotWfStatus === "READY_FOR_RECRUITMENT" || 
+                                   slotWfStatus === "Recruiting" || 
+                                   slot.slotStatus === "READY_FOR_RECRUITMENT" || 
+                                   slot.slotStatus === "Recruiting" ||
+                                   (slot.stage && slot.stage !== "received");
+
+            const isPendingApproval = !isSlotApproved && (
+              slotWfStatus === "PENDING_ADMIN" || 
+              slotWfStatus === "PENDING_APPROVER" || 
+              slotWfStatus === "PENDING_IT"
+            );
 
             let initialStage = slot.stage || r.stage || "received";
             let effectiveStage = initialStage;
             if (isPendingApproval) {
               effectiveStage = "received";
-            } else if ((currentWorkflowStatus === "READY_FOR_RECRUITMENT" || currentWorkflowStatus === "Recruiting") && initialStage === "received") {
+            } else if ((slotWfStatus === "READY_FOR_RECRUITMENT" || slotWfStatus === "Recruiting") && (initialStage === "received" || !initialStage)) {
               effectiveStage = "manpower";
             }
 
             const slotEffectiveStatus = (slot.slotStatus === "Closed" || effectiveStage === "onboarded" || effectiveStage === "cancelled")
               ? "Closed"
-              : (slot.slotStatus || r.requestStatus || "Recruiting");
+              : (slot.slotStatus || r.requestStatus || "READY_FOR_RECRUITMENT");
 
             const resolvedDriveUrl = slot.resumeUrl || matchedCand?.resumeUrl || matchedCand?.driveUrl || "";
 
@@ -1656,7 +1695,7 @@
               slotIndex: slot.slotIndex,
               totalSlots: headcount,
               slotStatus: slotEffectiveStatus,
-              workflowStatus: currentWorkflowStatus,
+              workflowStatus: slotWfStatus,
               requestStatus: slotEffectiveStatus,
               parentRequestId: r.id,
               candidateName: slot.candidateName || matchedCand?.fullName || "",
@@ -1690,7 +1729,22 @@
 
       // Slot-level In Process and Closed lists
       const inProcessSlots = useMemo(() => {
-        return allPositionSlots.filter(s => s.slotStatus === "Recruiting" && s.stage !== "cancelled" && s.stage !== "onboarded");
+        return allPositionSlots.filter(s => {
+          // If closed, onboarded, or cancelled -> not in progress
+          if (s.slotStatus === "Closed" || s.stage === "onboarded" || s.stage === "cancelled") {
+            return false;
+          }
+          // If rejected by admin -> not in progress
+          if (s.slotStatus === "REJECTED_BY_ADMIN" || s.workflowStatus === "REJECTED_BY_ADMIN") {
+            return false;
+          }
+          // If unapproved and still in received stage -> waiting in Requisition Queue
+          if ((s.slotStatus === "PENDING_ADMIN" || s.workflowStatus === "PENDING_ADMIN") && s.stage === "received") {
+            return false;
+          }
+          // All approved / actively recruited positions belong to In Progress
+          return true;
+        });
       }, [allPositionSlots]);
 
       const closedSlots = useMemo(() => {
@@ -2112,6 +2166,247 @@
         setCandidatePool(prev => prev.filter(c => c.candidateId !== targetId));
         triggerToast(`ลบข้อมูลคุณ ${targetName} ออกจากระบบเรียบร้อย`);
         setCandidateToDelete(null);
+      };
+
+      // Handler to update a slot's job title directly from Kanban card or Detail Modal
+      const handleUpdateSlotJobTitle = (slotId, newTitle) => {
+        const trimmedTitle = (newTitle || "").trim();
+        if (!trimmedTitle) {
+          triggerToast("⚠️ กรุณาระบุชื่อตำแหน่งงาน");
+          return;
+        }
+
+        setRequests(prev => prev.map(r => {
+          if (!r.slots) return r;
+          let hasMatchingSlot = false;
+          const slots = r.slots.map(s => {
+            if (s.slotId === slotId) {
+              hasMatchingSlot = true;
+              return { ...s, jobTitle: trimmedTitle };
+            }
+            return s;
+          });
+
+          if (hasMatchingSlot) {
+            return {
+              ...r,
+              jobTitle: r.slots.length === 1 ? trimmedTitle : r.jobTitle,
+              slots,
+              lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
+            };
+          }
+          return r;
+        }));
+
+        setSelectedDetailSlot(prev => {
+          if (prev && prev.slotId === slotId) {
+            return { ...prev, jobTitle: trimmedTitle };
+          }
+          return prev;
+        });
+
+        setEditingCardTitleSlotId(null);
+        setIsModalEditingTitle(false);
+        triggerToast(`✏️ อัปเดตชื่อตำแหน่ง Slot #${slotId} เป็น "${trimmedTitle}" เรียบร้อยแล้ว`);
+      };
+
+      // Handler to duplicate a position slot (for evaluating multiple candidates on the same job role)
+      const handleDuplicateSlot = (sourceSlot) => {
+        if (!sourceSlot) return;
+        const parentReqId = sourceSlot.parentRequestId || sourceSlot.id;
+
+        setRequests(prev => prev.map(r => {
+          if (r.id === parentReqId) {
+            const currentSlots = (r.slots && r.slots.length > 0)
+              ? [...r.slots]
+              : [{
+                  slotId: `${r.id}-1`,
+                  slotIndex: 1,
+                  slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
+                  candidateName: r.candidateName || "",
+                  candidatePhone: r.candidatePhone || "",
+                  candidateNickname: r.candidateNickname || "",
+                  resumeUrl: r.resumeUrl || "",
+                  stage: r.stage || "manpower"
+                }];
+
+            const nextIndex = currentSlots.length + 1;
+            const newSlotId = `${r.id}-${nextIndex}`;
+            
+            // Keep in relevant recruitment stage, or default to manpower
+            const defaultStage = (sourceSlot.stage === "onboarded" || sourceSlot.stage === "cancelled" || sourceSlot.stage === "received")
+              ? "manpower"
+              : (sourceSlot.stage || "manpower");
+
+            const newClonedSlot = {
+              slotId: newSlotId,
+              slotIndex: nextIndex,
+              slotStatus: "READY_FOR_RECRUITMENT",
+              workflowStatus: "READY_FOR_RECRUITMENT",
+              stage: defaultStage,
+              candidateName: "",
+              candidatePhone: "",
+              candidateNickname: "",
+              resumeUrl: "",
+              interviewSchedule: "",
+              interviewScore: 0,
+              interviewScorePercent: 0,
+              interviewResult: "",
+              evaluations: [],
+              offerSentDate: "",
+              hireDate: "",
+              onboardingArrivalStatus: "pending_arrival",
+              rejectionReason: "",
+              itEquipmentConfirmed: false,
+              isItNotified: false,
+              hasAttendedFirstDayTraining: false,
+              isArchivedFromKanban: false,
+              jobTitle: sourceSlot.jobTitle || r.jobTitle,
+              priority: sourceSlot.priority || r.priority || "NORMAL"
+            };
+
+            const updatedSlots = [...currentSlots, newClonedSlot];
+            return {
+              ...r,
+              headcountRequired: updatedSlots.length,
+              slots: updatedSlots,
+              lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
+            };
+          }
+          return r;
+        }));
+
+        triggerToast(`📋 คัดลอกตำแหน่ง "${sourceSlot.jobTitle}" สำเร็จ! เพิ่ม Slot สำหรับ Candidate อีกท่านเรียบร้อย`);
+      };
+
+      // Handler for confirming slot deletion with mandatory reason
+      const handleConfirmDeleteSlot = () => {
+        if (!slotToDelete) return;
+        const reason = deletionReasonInput.trim();
+        if (!reason) {
+          triggerToast("⚠️ กรุณาระบุเหตุผลในการลบ");
+          return;
+        }
+
+        const targetSlotId = slotToDelete.slotId;
+        const parentReqId = slotToDelete.parentRequestId || slotToDelete.id;
+        const candName = slotToDelete.candidateName;
+
+        // 1. Detach candidate from pool if assigned
+        if (candName || slotToDelete.assignedSlotId) {
+          setCandidatePool(prev => prev.map(c => {
+            if (c.assignedSlotId === targetSlotId || (candName && isSameCandidate(c.fullName, candName))) {
+              return { ...c, assignedSlotId: "" };
+            }
+            return c;
+          }));
+        }
+
+        // 2. Remove slot from requests
+        setRequests(prev => {
+          return prev.map(r => {
+            if (r.id === parentReqId || (r.slots && r.slots.some(s => s.slotId === targetSlotId))) {
+              const remainingSlots = (r.slots || []).filter(s => s.slotId !== targetSlotId);
+              if (remainingSlots.length === 0) {
+                return null;
+              }
+              return {
+                ...r,
+                headcountRequired: remainingSlots.length,
+                slots: remainingSlots,
+                lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
+              };
+            }
+            return r;
+          }).filter(Boolean);
+        });
+
+        if (selectedDetailSlot && selectedDetailSlot.slotId === targetSlotId) {
+          setSelectedDetailSlot(null);
+        }
+
+        triggerToast(`🗑️ ลบตำแหน่ง Slot #${targetSlotId} ออกจากระบบเรียบร้อย (เหตุผล: ${reason})`);
+        setSlotToDelete(null);
+        setDeletionReasonInput("");
+      };
+
+      // Handler for slot-by-slot approval in Requisition Inspection
+      const handleAdminApproveSpecificSlot = (slotId, reqId) => {
+        try {
+          setIsApprovingEmailSending(true);
+          const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+          setRequests(prev => prev.map(r => {
+            if (r.id === reqId || r.slots?.some(s => s.slotId === slotId)) {
+              const headcount = Math.max(1, Number(r.headcountRequired) || 1);
+              const baseSlots = (r.slots && r.slots.length > 0)
+                ? r.slots
+                : Array.from({ length: headcount }, (_, i) => ({
+                    slotId: `${r.id}-${i + 1}`,
+                    slotIndex: i + 1,
+                    slotStatus: "PENDING_ADMIN",
+                    workflowStatus: "PENDING_ADMIN",
+                    stage: "received",
+                    candidateName: "",
+                    candidatePhone: "",
+                    candidateNickname: "",
+                    resumeUrl: "",
+                    evaluations: []
+                  }));
+
+              const updatedSlots = baseSlots.map(s => {
+                if (s.slotId === slotId) {
+                  return {
+                    ...s,
+                    slotStatus: "READY_FOR_RECRUITMENT",
+                    workflowStatus: "READY_FOR_RECRUITMENT",
+                    stage: "manpower"
+                  };
+                }
+                return s;
+              });
+
+              const allApproved = updatedSlots.every(s => 
+                s.slotStatus === "READY_FOR_RECRUITMENT" || 
+                s.slotStatus === "Recruiting" || 
+                s.slotStatus === "Closed"
+              );
+
+              return {
+                ...r,
+                requestStatus: allApproved ? "READY_FOR_RECRUITMENT" : r.requestStatus,
+                workflowStatus: allApproved ? "READY_FOR_RECRUITMENT" : r.workflowStatus,
+                slots: updatedSlots,
+                lastUpdated: nowStr
+              };
+            }
+            return r;
+          }));
+
+          if (selectedRequisitionDetail) {
+            setSelectedRequisitionDetail(prev => {
+              if (!prev) return null;
+              const updatedSlots = (prev.slots || []).map(s => {
+                if (s.slotId === slotId) {
+                  return {
+                    ...s,
+                    slotStatus: "READY_FOR_RECRUITMENT",
+                    workflowStatus: "READY_FOR_RECRUITMENT",
+                    stage: "manpower"
+                  };
+                }
+                return s;
+              });
+              return { ...prev, slots: updatedSlots };
+            });
+          }
+
+          triggerToast(`✅ ยืนยันอนุมัติ Slot #${slotId} เรียบร้อยแล้ว! (ย้ายเข้า 1. Manpower Request บน Kanban)`);
+        } catch (err) {
+          triggerToast("เกิดข้อผิดพลาดในการอนุมัติ Slot");
+        } finally {
+          setIsApprovingEmailSending(false);
+        }
       };
 
       const handleOpenBlindEvaluationModal = (slot) => {
@@ -2728,13 +3023,11 @@
       const handleFormSubmit = (e) => {
         e.preventDefault();
 
-        // 🔒 ระบบตรวจสอบความถูกต้องเข้มงวด 100% (Strict Validation: ไม่ใส่ = ไม่ให้กดยืนยัน)
+        // 🔒 ตรวจสอบความถูกต้องของข้อมูล (Department และ Division สามารถระบุเป็น "-" หรือเว้นว่างได้ 100%)
         const requiredValidationRules = [
           { val: formInput.requesterName, name: "Requester Name - EN (ชื่อผู้ขอภาษาอังกฤษ)" },
           { val: formInput.requesterPosition, name: "Requester Position (ตำแหน่งผู้ขอ)" },
           { val: formInput.requesterEmail, name: "Requester Email (อีเมลผู้ขอ)" },
-          { val: formInput.department, name: "Department (ฝ่ายงาน)" },
-          { val: formInput.division, name: "Division (สายงาน)" },
           { val: formInput.candidateSupervisor, name: "Candidate Supervisor - EN (หัวหน้างานของ Candidate)" },
           { val: formInput.approverName, name: "Approver Name (ชื่อผู้อนุมัติ)" },
           { val: formInput.approverEmail, name: "Approver Email (อีเมลผู้อนุมัติ)" },
@@ -2776,8 +3069,22 @@
           return;
         }
 
-        // Open Confirmation Preview Modal when all fields are 100% valid
-        setPendingConfirmationForm({ ...formInput });
+        // จัดการค่า Department และ Division: หากระบุ "-" หรือเว้นว่าง ให้ส่งค่าเป็น "-" อย่างถูกต้อง 100%
+        const sanitizedDepartment = (formInput.department && String(formInput.department).trim() && String(formInput.department).trim() !== "") 
+          ? String(formInput.department).trim() 
+          : "-";
+        const sanitizedDivision = (formInput.division && String(formInput.division).trim() && String(formInput.division).trim() !== "") 
+          ? String(formInput.division).trim() 
+          : "-";
+
+        const sanitizedForm = {
+          ...formInput,
+          department: sanitizedDepartment,
+          division: sanitizedDivision
+        };
+
+        // แสดงหน้าต่างตรวจสอบสรุปข้อมูลก่อนส่งคำขอจริง
+        setPendingConfirmationForm(sanitizedForm);
         setShowConfirmModal(true);
       };
 
@@ -2843,7 +3150,7 @@
         setShowRequestModal(false);
         setPendingConfirmationForm(null);
         setFormInput(initialForm);
-        triggerToast("🎉 ส่งคำขอกำลังคนสำเร็จ & บันทึกลง Sheet แบบขอกำลังคน (GID 1528284561) เรียบร้อย!");
+        triggerToast("🎉 ส่งคำขอกำลังคนสำเร็จ! คำขอถูกส่งเข้าคิวแอดมิน & แสดงบนกระดานเรียบร้อยแล้ว");
       };
 
       // Admin Review: Transition immediately to READY_FOR_RECRUITMENT and move to manpower stage (No email)
@@ -2860,12 +3167,26 @@
           // Update state of requests to READY_FOR_RECRUITMENT and stage to manpower
           setRequests(prev => prev.map(r => {
             if (r.id === parentReqId) {
-              const updatedSlots = (r.slots || []).map(s => ({
+              const headcount = Math.max(1, Number(r.headcountRequired) || 1);
+              const baseSlots = (r.slots && r.slots.length > 0)
+                ? r.slots
+                : Array.from({ length: headcount }, (_, i) => ({
+                    slotId: `${r.id}-${i + 1}`,
+                    slotIndex: i + 1,
+                    candidateName: "",
+                    candidatePhone: "",
+                    candidateNickname: "",
+                    resumeUrl: "",
+                    evaluations: []
+                  }));
+
+              const updatedSlots = baseSlots.map(s => ({
                 ...s,
                 slotStatus: "READY_FOR_RECRUITMENT",
                 workflowStatus: "READY_FOR_RECRUITMENT",
                 stage: "manpower"
               }));
+
               return {
                 ...r,
                 requestStatus: "READY_FOR_RECRUITMENT",
@@ -2894,12 +3215,36 @@
           setShowAdminReviewModal(false);
           setSelectedAdminReviewSlot(null);
           if (selectedRequisitionDetail && selectedRequisitionDetail.id === parentReqId) {
-            setSelectedRequisitionDetail(prev => ({
-              ...prev,
-              requestStatus: "READY_FOR_RECRUITMENT",
-              workflowStatus: "READY_FOR_RECRUITMENT",
-              stage: "manpower"
-            }));
+            setSelectedRequisitionDetail(prev => {
+              if (!prev) return null;
+              const headcount = Math.max(1, Number(prev.headcountRequired) || 1);
+              const baseSlots = (prev.slots && prev.slots.length > 0)
+                ? prev.slots
+                : Array.from({ length: headcount }, (_, i) => ({
+                    slotId: `${prev.id}-${i + 1}`,
+                    slotIndex: i + 1,
+                    candidateName: "",
+                    candidatePhone: "",
+                    candidateNickname: "",
+                    resumeUrl: "",
+                    evaluations: []
+                  }));
+
+              const updatedSlots = baseSlots.map(s => ({
+                ...s,
+                slotStatus: "READY_FOR_RECRUITMENT",
+                workflowStatus: "READY_FOR_RECRUITMENT",
+                stage: "manpower"
+              }));
+
+              return {
+                ...prev,
+                requestStatus: "READY_FOR_RECRUITMENT",
+                workflowStatus: "READY_FOR_RECRUITMENT",
+                stage: "manpower",
+                slots: updatedSlots
+              };
+            });
           }
           triggerToast(`✅ ยืนยันรับข้อมูลเรียบร้อย! ปรับสถานะเป็น READY_FOR_RECRUITMENT และย้ายคำขอเข้าสู่ 1. Manpower Request บน Kanban ทันที`);
         } catch (err) {
@@ -3040,27 +3385,6 @@
                         </div>
                       </div>
 
-                      {/* View Switcher based on Admin permissions */}
-                      {isAdminAuthenticated ? (
-                        currentView === "public" ? (
-                          <button
-                            onClick={() => setCurrentView("admin")}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-200 bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/60 dark:hover:bg-sky-900 border border-sky-200 dark:border-sky-800 transition"
-                          >
-                            <Icon name="shieldCheck" className="w-3.5 h-3.5 text-sky-600" />
-                            <span className="hidden sm:inline">Admin Portal</span>
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => setCurrentView("public")}
-                            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 transition"
-                          >
-                            <Icon name="grid" className="w-3.5 h-3.5" />
-                            <span className="hidden sm:inline">Public View</span>
-                          </button>
-                        )
-                      ) : null}
-
                       <button
                         onClick={handleUserLogout}
                         className="p-2 rounded-xl text-rose-600 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 transition"
@@ -3179,204 +3503,31 @@
               </div>
             </div>
 
-            {currentView === "public" && (
-              <div className="space-y-8">
-                
-                {/* 1. Stage Tracker */}
-                <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-6">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800 mb-6">
-                    <div>
-                      <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                        <Icon name="grid" className="w-5 h-5 text-amber-600" />
-                        Recruitment Stage Tracker
-                      </h2>
-                    </div>
+            <div className="space-y-6">
+              {/* Navigation Tabs - แสดงตามสิทธิ์ (Admin เห็น 1, 2, 3 / User เห็นเฉพาะ 2) */}
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 dark:border-slate-800 pb-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  {/* หน้า 1: Requisition Queue (แอดมินเท่านั้น) */}
+                  {isAdminAuthenticated && (
+                    <button
+                      onClick={() => setAdminSubTab("requisitions")}
+                      className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
+                        adminSubTab === "requisitions"
+                          ? "bg-brand-600 text-white shadow-md shadow-brand-500/20"
+                          : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200/70 dark:border-slate-700 hover:bg-slate-100"
+                      }`}
+                    >
+                      <Icon name="clipboardCheck" className="w-4 h-4" />
+                      <span>1. Requisition Queue (1. คิวตรวจสอบคำขอ)</span>
+                      {pendingAdminCount > 0 && (
+                        <span className="px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-500 text-white animate-pulse">
+                          {pendingAdminCount}
+                        </span>
+                      )}
+                    </button>
+                  )}
 
-                    <div className="relative w-full sm:w-72">
-                      <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                        <Icon name="search" className="w-4 h-4" />
-                      </div>
-                      <input
-                        type="text"
-                        placeholder="ค้นหาตำแหน่ง, รหัส, ฝ่ายงาน, ผู้สมัคร..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex gap-4 overflow-x-auto pb-4 snap-x min-w-full">
-                    {STAGES.map(stage => {
-                      const stageItems = allPositionSlots.filter(s => {
-                        const matchesQuery = !searchQuery.trim() || 
-                          s.jobTitle?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          s.department?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          s.candidateName?.toLowerCase().includes(searchQuery.toLowerCase());
-                        return s.stage === stage.id && !s.isArchivedFromKanban && matchesQuery;
-                      });
-
-                      return (
-                        <div key={stage.id} className="w-64 shrink-0 snap-start flex flex-col rounded-2xl bg-slate-50 dark:bg-slate-800/40 p-3 border border-slate-200/60 dark:border-slate-800">
-                          <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-200 dark:border-slate-700">
-                            <span className="text-xs font-bold text-slate-700 dark:text-slate-300">{stage.label}</span>
-                            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400">
-                              {stageItems.length}
-                            </span>
-                          </div>
-
-                          <div className="space-y-3 flex-1 overflow-y-auto max-h-[500px]">
-                            {stageItems.map(item => {
-                              const sla = getSLAInfo(item.requestDate, item.stage, item.offerSentDate);
-                              const priorityInfo = getPositionPriorityInfo(item);
-                              const isArrived = item.stage === "onboarded" && (item.hasAttendedFirstDayTraining || item.onboardingArrivalStatus === "arrived_reported");
-
-                              return (
-                                <div 
-                                  key={item.slotId} 
-                                  onClick={() => setSelectedDetailSlot(item)}
-                                  className={`p-3.5 rounded-2xl border transition-all duration-150 cursor-pointer group hover:shadow-md hover:scale-[1.01] ${
-                                    isArrived
-                                      ? "bg-emerald-50/70 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-700/80"
-                                      : "bg-white dark:bg-slate-900 border-slate-200/80 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700"
-                                  }`}
-                                  title="คลิกเพื่อดูข้อมูลและรายละเอียดทั้งหมด"
-                                >
-                                  {/* Minimal Header */}
-                                  <div className="flex items-center justify-between text-[11px] mb-2">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="relative flex h-2 w-2">
-                                        {priorityInfo.ping && (
-                                          <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${priorityInfo.dotBg} opacity-75`}></span>
-                                        )}
-                                        <span className={`relative inline-flex rounded-full h-2 w-2 ${priorityInfo.dotBg}`}></span>
-                                      </span>
-                                      <span className="font-semibold text-slate-500 dark:text-slate-400 text-[10.5px]">
-                                        {priorityInfo.label.split(' ')[0]}
-                                      </span>
-                                    </div>
-                                    <span className="font-mono text-slate-400 text-[10.5px]">{item.slotId}</span>
-                                  </div>
-
-                                  {/* Title & Department */}
-                                  <h4 className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors line-clamp-2 leading-snug">
-                                    {item.jobTitle}
-                                  </h4>
-                                  <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1 truncate">
-                                    {item.department}
-                                  </p>
-
-                                  {/* Candidate Badge if assigned */}
-                                  {item.candidateName && (
-                                    <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px]">
-                                      <span className="font-semibold text-slate-700 dark:text-slate-300 truncate">
-                                        👤 {item.candidateName}
-                                      </span>
-                                      {item.candidateNickname && (
-                                        <span className="text-[10px] text-slate-400 shrink-0 ml-1">({item.candidateNickname})</span>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* 2. Headcount Demand by Department (Public View) */}
-                <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-6">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800 mb-6">
-                    <div>
-                      <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
-                        <Icon name="building" className="w-5 h-5 text-brand-600" />
-                        Headcount Demand by Department
-                      </h2>
-                    </div>
-
-                    <div className="flex items-center gap-2 text-xs">
-                      <select
-                        value={selectedMonthFilter}
-                        onChange={(e) => setSelectedMonthFilter(e.target.value)}
-                        className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                      >
-                        <option value="ALL">All Months</option>
-                        <option value="08">August</option>
-                        <option value="09">September</option>
-                        <option value="10">October</option>
-                      </select>
-                      <select
-                        value={selectedYearFilter}
-                        onChange={(e) => setSelectedYearFilter(e.target.value)}
-                        className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                      >
-                        <option value="ALL">All Years</option>
-                        <option value="2026">2026</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[440px] overflow-y-auto pr-1">
-                    {departmentStats.map((item, idx) => {
-                      const maxTotal = departmentStats[0]?.total || 1;
-                      const percent = Math.min(100, Math.round((item.total / maxTotal) * 100));
-
-                      return (
-                        <div 
-                          key={item.department} 
-                          onClick={() => setSelectedDepartmentDetail(item.department)}
-                          className="p-3.5 rounded-2xl bg-slate-50/70 dark:bg-slate-800/40 border border-slate-200/60 dark:border-slate-800 hover:border-brand-400 dark:hover:border-brand-500 hover:bg-white dark:hover:bg-slate-800 hover:shadow-md transition cursor-pointer flex flex-col justify-between group"
-                        >
-                          <div className="flex items-start justify-between gap-2 mb-2">
-                            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 line-clamp-1 group-hover:text-brand-600 transition">
-                              <span className="text-brand-500 font-semibold mr-1.5">#{idx + 1}</span>
-                              {item.department}
-                            </span>
-                            <div className="flex items-center gap-1.5 text-[11px] font-bold shrink-0">
-                              <span className="text-slate-700 dark:text-slate-300">Total: {item.total}</span>
-                              <span className="text-amber-600">Open: {item.open}</span>
-                              <span className="text-emerald-600">Filled: {item.filled}</span>
-                            </div>
-                          </div>
-
-                          <div className="w-full h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-                            <div 
-                              className="h-full bg-gradient-to-r from-brand-500 to-sky-400 rounded-full transition-all duration-500"
-                              style={{ width: `${item.total > 0 ? percent : 0}%` }}
-                            ></div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-              </div>
-            )}
-            {currentView === "admin" && (
-              <div className="space-y-6">
-                {/* Admin Sub-Tabs - Bilingual English (Thai) */}
-                <div className="flex flex-wrap items-center gap-2 border-b border-slate-200/80 dark:border-slate-800 pb-3">
-                  <button
-                    onClick={() => setAdminSubTab("requisitions")}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
-                      adminSubTab === "requisitions"
-                        ? "bg-brand-600 text-white shadow-md shadow-brand-500/20"
-                        : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200/70 dark:border-slate-700 hover:bg-slate-100"
-                    }`}
-                  >
-                    <Icon name="clipboardCheck" className="w-4 h-4" />
-                    <span>1. Requisition Queue (1. คิวตรวจสอบคำขอ)</span>
-                    {pendingAdminCount > 0 && (
-                      <span className="px-1.5 py-0.5 rounded-full text-[10px] font-extrabold bg-rose-500 text-white animate-pulse">
-                        {pendingAdminCount}
-                      </span>
-                    )}
-                  </button>
-
+                  {/* หน้า 2: Kanban Pipeline (ทุกคนเข้าถึงได้เพื่อร่วมติดตามและประเมินผล) */}
                   <button
                     onClick={() => setAdminSubTab("kanban")}
                     className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
@@ -3386,25 +3537,39 @@
                     }`}
                   >
                     <Icon name="grid" className="w-3.5 h-3.5" />
-                    <span>2. Kanban Pipeline &amp; Demand (2. กระดานและอัตรากำลังคน)</span>
+                    <span>
+                      {isAdminAuthenticated
+                        ? "2. Kanban Pipeline & Demand (2. กระดานและอัตรากำลังคน)"
+                        : "📋 Kanban Pipeline & Evaluation (กระดานสรรหาและร่วมประเมินคะแนน)"}
+                    </span>
                   </button>
 
-                  <button
-                    onClick={() => setAdminSubTab("candidates")}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                      adminSubTab === "candidates"
-                        ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-md"
-                        : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200/70 dark:border-slate-700 hover:bg-slate-100"
-                    }`}
-                  >
-                    <Icon name="userSearch" className="w-3.5 h-3.5" />
-                    <span>3. Candidate Pool &amp; Requisitions (3. คลังผู้สมัครและแบบขอกำลังคน)</span>
-                  </button>
+                  {/* หน้า 3: Candidate Pool & Requisitions (แอดมินเท่านั้น) */}
+                  {isAdminAuthenticated && (
+                    <button
+                      onClick={() => setAdminSubTab("candidates")}
+                      className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                        adminSubTab === "candidates"
+                          ? "bg-slate-900 dark:bg-white text-white dark:text-slate-900 shadow-md"
+                          : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border border-slate-200/70 dark:border-slate-700 hover:bg-slate-100"
+                      }`}
+                    >
+                      <Icon name="userSearch" className="w-3.5 h-3.5" />
+                      <span>3. Candidate Pool &amp; Requisitions (3. คลังผู้สมัครและแบบขอกำลังคน)</span>
+                    </button>
+                  )}
                 </div>
 
-                {/* SUB-TAB 1: REQUISITION QUEUE (PRIORITY SORTED: PENDING_ADMIN FIRST) */}
-                {adminSubTab === "requisitions" && (
-                  <div className="space-y-6">
+                {!isAdminAuthenticated && (
+                  <div className="flex items-center gap-1.5 text-xs text-sky-800 dark:text-sky-200 bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 px-3 py-1.5 rounded-xl font-medium">
+                    <span>👥 <strong>โหมดพนักงาน (User View):</strong> สามารถร่วมติดตามความคืบหน้า และกดปุ่ม <span className="font-bold text-brand-600">⭐ ร่วมประเมิน</span> ในด่านสัมภาษณ์ได้</span>
+                  </div>
+                )}
+              </div>
+
+              {/* SUB-TAB 1: REQUISITION QUEUE (แอดมินเท่านั้นที่เห็นได้) */}
+              {isAdminAuthenticated && adminSubTab === "requisitions" && (
+                <div className="space-y-6">
                     {/* KPI Quick Status Cards - Modern Enterprise Style */}
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                       <div 
@@ -3607,23 +3772,28 @@
                       </div>
                     </div>
                   </div>
-                )}
+              )}
 
-                {/* SUB-TAB 2: KANBAN PIPELINE & DEMAND */}
-                {adminSubTab === "kanban" && (
-                  <div className="space-y-8">
+              {/* SUB-TAB 2: KANBAN PIPELINE & DEMAND (ทุกคนเห็นได้ & User ร่วมประเมินได้ที่นี่) */}
+              {adminSubTab === "kanban" && (
+                <div className="space-y-8">
                     {/* Interactive Kanban Pipeline */}
                     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-6">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800 mb-6">
                         <div>
                           <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
                             <Icon name="grid" className="w-5 h-5 text-brand-600" />
-                            Kanban Pipeline
+                            <span>{isAdminAuthenticated ? "Kanban Pipeline (กระดานสรรหา)" : "Kanban Pipeline & Evaluation (กระดานติดตามและร่วมประเมิน)"}</span>
                           </h2>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            {isAdminAuthenticated
+                              ? "ลากย้ายขั้นตอน จัดการสถานะ และควบคุมกระบวนการสรรหาทั้งหมด"
+                              : "ติดตามขั้นตอนการสรรหาทุกตำแหน่ง และคลิกปุ่ม '⭐ ร่วมประเมินคะแนน' ในด่านสัมภาษณ์ได้ทันที"}
+                          </p>
                         </div>
 
                         <div className="flex items-center gap-2">
-                          {allPositionSlots.some(s => s.isArchivedFromKanban) && (
+                          {isAdminAuthenticated && allPositionSlots.some(s => s.isArchivedFromKanban) && (
                             <button
                               onClick={handleRestoreAllArchivedCards}
                               className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1 transition"
@@ -3662,9 +3832,9 @@
                           return (
                             <div
                               key={stage.id}
-                              onDragOver={(e) => handleDragOver(e, stage.id)}
-                              onDragLeave={(e) => handleDragLeave(e, stage.id)}
-                              onDrop={(e) => handleDrop(e, stage.id)}
+                              onDragOver={(e) => isAdminAuthenticated && handleDragOver(e, stage.id)}
+                              onDragLeave={(e) => isAdminAuthenticated && handleDragLeave(e, stage.id)}
+                              onDrop={(e) => isAdminAuthenticated && handleDrop(e, stage.id)}
                               className={`w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 transition-all duration-150 ${
                                 dragOverStage === stage.id
                                   ? 'border-brand-500 bg-brand-50/70 dark:bg-brand-950/50 ring-2 ring-brand-500/20'
@@ -3681,7 +3851,7 @@
                                   </span>
                                 </div>
 
-                                {(stage.id === "onboarded" || stage.id === "cancelled") && stageItems.length > 0 && (
+                                {isAdminAuthenticated && (stage.id === "onboarded" || stage.id === "cancelled") && stageItems.length > 0 && (
                                   <button
                                     type="button"
                                     onClick={(e) => {
@@ -3705,8 +3875,8 @@
                                   return (
                                     <div
                                       key={item.slotId}
-                                      draggable={true}
-                                      onDragStart={(e) => handleDragStart(e, item.slotId)}
+                                      draggable={isAdminAuthenticated}
+                                      onDragStart={(e) => isAdminAuthenticated && handleDragStart(e, item.slotId)}
                                       onDragEnd={() => { setDraggedSlotId(null); setDragOverStage(null); }}
                                       onClick={() => setSelectedDetailSlot(item)}
                                       className={`p-3.5 rounded-2xl border transition-all duration-150 cursor-pointer select-none group hover:shadow-md hover:scale-[1.01] ${
@@ -3718,12 +3888,14 @@
                                           ? 'border-emerald-300 dark:border-emerald-700/80 bg-emerald-50/60 dark:bg-emerald-950/40'
                                           : 'border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
                                       }`}
-                                      title="คลิกการ์ดเพื่อดูรายละเอียดทั้งหมด"
+                                      title={isAdminAuthenticated ? "คลิกการ์ดเพื่อดูรายละเอียด (แอดมินลากย้ายขั้นตอนได้)" : "คลิกการ์ดเพื่อดูรายละเอียดตำแหน่ง"}
                                     >
                                       {/* Minimal Card Header: Priority dot & Slot ID */}
                                       <div className="flex items-center justify-between text-[11px] mb-2">
                                         <div className="flex items-center gap-1.5">
-                                          <span className="text-slate-300 dark:text-slate-600 font-mono text-xs cursor-grab" title="ลากเพื่อย้ายขั้นตอน">⋮⋮</span>
+                                          {isAdminAuthenticated && (
+                                            <span className="text-slate-300 dark:text-slate-600 font-mono text-xs cursor-grab" title="ลากเพื่อย้ายขั้นตอน">⋮⋮</span>
+                                          )}
                                           <span className="relative flex h-2 w-2">
                                             {priorityInfo.ping && (
                                               <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${priorityInfo.dotBg} opacity-75`}></span>
@@ -3734,19 +3906,74 @@
                                             {priorityInfo.label.split(' ')[0]}
                                           </span>
                                         </div>
-                                        <span className="font-mono text-slate-400 text-[10.5px]">{item.slotId}</span>
+                                        <div className="flex items-center gap-1">
+                                          <span className="font-mono text-slate-400 text-[10.5px]">{item.slotId}</span>
+                                          {item.totalSlots > 1 && (
+                                            <span className="font-mono font-extrabold text-[9.5px] px-1.5 py-0.2 rounded-md bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border border-sky-300 dark:border-sky-800" title={`อัตราที่ ${item.slotIndex} จากทั้งหมด ${item.totalSlots} อัตรา`}>
+                                              {item.slotIndex}/{item.totalSlots}
+                                            </span>
+                                          )}
+                                        </div>
                                       </div>
 
-                                      {/* Title & Department */}
-                                      <h4 className="text-xs font-bold text-slate-900 dark:text-white line-clamp-2 leading-snug group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
-                                        {item.jobTitle}
-                                      </h4>
+                                      {/* Title & Department with Inline Editing Support (Only Admin) */}
+                                      {isAdminAuthenticated && editingCardTitleSlotId === item.slotId ? (
+                                        <div onClick={(e) => e.stopPropagation()} className="my-1.5 flex items-center gap-1">
+                                          <input
+                                            type="text"
+                                            autoFocus
+                                            value={editingCardTitleValue}
+                                            onChange={(e) => setEditingCardTitleValue(e.target.value)}
+                                            onKeyDown={(e) => {
+                                              if (e.key === 'Enter') handleUpdateSlotJobTitle(item.slotId, editingCardTitleValue);
+                                              if (e.key === 'Escape') setEditingCardTitleSlotId(null);
+                                            }}
+                                            className="w-full px-2 py-1 text-xs font-bold rounded-lg border border-brand-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                                          />
+                                          <button
+                                            type="button"
+                                            onClick={() => handleUpdateSlotJobTitle(item.slotId, editingCardTitleValue)}
+                                            className="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold hover:bg-emerald-700 shrink-0 shadow-2xs"
+                                            title="บันทึก"
+                                          >
+                                            ✓
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setEditingCardTitleSlotId(null)}
+                                            className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] shrink-0"
+                                            title="ยกเลิก"
+                                          >
+                                            ✕
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <div className="flex items-start justify-between gap-1 group/title">
+                                          <h4 className="text-xs font-bold text-slate-900 dark:text-white line-clamp-2 leading-snug group-hover:text-brand-600 dark:group-hover:text-brand-400 transition-colors">
+                                            {item.jobTitle}
+                                          </h4>
+                                          {isAdminAuthenticated && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setEditingCardTitleSlotId(item.slotId);
+                                                setEditingCardTitleValue(item.jobTitle || "");
+                                              }}
+                                              className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-brand-600 rounded transition shrink-0"
+                                              title="แก้ไขชื่อตำแหน่งนี้"
+                                            >
+                                              ✏️
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
                                       <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1 truncate">
                                         {item.department}
                                       </p>
 
                                       {/* Candidate info or Unassigned status */}
-                                      <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between">
+                                      <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-1">
                                         {item.candidateName ? (
                                           <span className="text-[11px] font-semibold text-slate-700 dark:text-slate-300 truncate">
                                             👤 {item.candidateName}
@@ -3757,9 +3984,27 @@
                                           </span>
                                         )}
 
-                                        {/* Action buttons & minimal stage selector dropdown */}
-                                        <div onClick={(e) => e.stopPropagation()} className="shrink-0 ml-2 flex items-center gap-1.5">
-                                          {item.stage === "onboarded" && (
+                                        {/* Action buttons & Stage Evaluation / Controls */}
+                                        <div onClick={(e) => e.stopPropagation()} className="shrink-0 flex items-center gap-1.5">
+                                          
+                                          {/* ⭐ ปุ่มร่วมประเมินคะแนนสัมภาษณ์ (ทุกคน ทั้ง User และ Admin สามารถกดได้ที่นี่) */}
+                                          {item.stage === "interview" && (
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleOpenBlindEvaluationModal(item);
+                                              }}
+                                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-gradient-to-r from-brand-600 to-sky-500 hover:from-brand-700 hover:to-sky-600 active:scale-95 text-white text-[10.5px] font-bold shadow-xs transition cursor-pointer"
+                                              title="คลิกเพื่อร่วมประเมินคะแนนสัมภาษณ์ผู้สมัคร"
+                                            >
+                                              <Icon name="clipboardCheck" className="w-3.5 h-3.5 text-white" />
+                                              <span>⭐ ร่วมประเมิน</span>
+                                            </button>
+                                          )}
+
+                                          {/* Admin Onboarded Actions */}
+                                          {isAdminAuthenticated && item.stage === "onboarded" && (
                                             isArrived ? (
                                               <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9.5px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/80 dark:bg-emerald-950/80 border border-emerald-300 dark:border-emerald-700">
                                                 ✓ เริ่มงานแล้ว
@@ -3779,15 +4024,49 @@
                                             )
                                           )}
 
-                                          <select
-                                            value={item.stage}
-                                            onChange={(e) => handleInitiateStageChange(item.slotId, e.target.value)}
-                                            className="text-[10px] font-medium py-0.5 px-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 focus:outline-none cursor-pointer"
-                                          >
-                                            {STAGES.map(st => (
-                                              <option key={st.id} value={st.id}>{st.id}</option>
-                                            ))}
-                                          </select>
+                                          {/* Stage selector dropdown (แอดมินเท่านั้น / ถ้าเป็น User แสดงเป็นป้ายสเตจธรรมดา) */}
+                                          {isAdminAuthenticated ? (
+                                            <div className="flex items-center gap-1">
+                                              <select
+                                                value={item.stage}
+                                                onChange={(e) => handleInitiateStageChange(item.slotId, e.target.value)}
+                                                className="text-[10px] font-medium py-0.5 px-1.5 rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 focus:outline-none cursor-pointer"
+                                              >
+                                                {STAGES.map(st => (
+                                                  <option key={st.id} value={st.id}>{st.id}</option>
+                                                ))}
+                                              </select>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleDuplicateSlot(item);
+                                                }}
+                                                className="p-1 rounded-md text-slate-400 hover:text-sky-600 dark:hover:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/50 transition cursor-pointer"
+                                                title="คัดลอกตำแหน่งนี้ (เพิ่มอัตราสำหรับ Candidate อีกคน)"
+                                              >
+                                                <span className="text-xs">📋</span>
+                                              </button>
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSlotToDelete(item);
+                                                  setDeletionReasonInput("");
+                                                }}
+                                                className="p-1 rounded-md text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition cursor-pointer"
+                                                title="ลบตำแหน่งนี้ออกจากกระดาน"
+                                              >
+                                                <span className="text-xs">🗑️</span>
+                                              </button>
+                                            </div>
+                                          ) : (
+                                            item.stage !== "interview" && (
+                                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                                                {item.stage}
+                                              </span>
+                                            )
+                                          )}
                                         </div>
                                       </div>
                                     </div>
@@ -3800,13 +4079,13 @@
                       </div>
                     </div>
 
-                    {/* Headcount Demand by Department (Admin View) */}
+                    {/* Headcount Demand by Department */}
                     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-6">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800 mb-6">
                         <div>
                           <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
                             <Icon name="building" className="w-5 h-5 text-brand-600" />
-                            Demand by Department
+                            <span>Headcount Demand by Department (อัตรากำลังพลแยกตามฝ่ายงาน)</span>
                           </h2>
                         </div>
                       </div>
@@ -3840,11 +4119,11 @@
                       </div>
                     </div>
                   </div>
-                )}
+              )}
 
-                {/* SUB-TAB 3: CANDIDATE POOL & MANPOWER REQUEST */}
-                {adminSubTab === "candidates" && (
-                  <div className="flex flex-col w-full space-y-8">
+              {/* SUB-TAB 3: CANDIDATE POOL & MANPOWER REQUEST (แอดมินเท่านั้นที่เห็นได้) */}
+              {isAdminAuthenticated && adminSubTab === "candidates" && (
+                <div className="flex flex-col w-full space-y-8">
                     {/* SECTION 1: Manpower Request (Top - Full Width) */}
                     <div className="w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-6 space-y-4">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
@@ -3995,21 +4274,19 @@
                                         <span className="inline-flex items-center px-2 py-0.5 rounded-lg text-[10.5px] font-bold bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-300 dark:border-purple-800">
                                           💻 PENDING_IT
                                         </span>
-                                      ) : s.slotStatus === "READY_FOR_RECRUITMENT" ? (
-                                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-lg text-[10.5px] font-extrabold bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200 border border-emerald-400 ring-2 ring-emerald-500/20">
-                                          ✅ READY_FOR_RECRUITMENT
-                                        </span>
                                       ) : (
                                         <select
-                                          value={s.slotStatus || "Recruiting"}
+                                          value={s.slotStatus || "READY_FOR_RECRUITMENT"}
                                           onChange={(e) => handleUpdateSlotStatus(s.slotId, e.target.value)}
-                                          className={`text-[11px] font-bold px-2 py-1 rounded-lg border ${
+                                          className={`text-[11px] font-bold px-2 py-1 rounded-lg border transition ${
                                             s.slotStatus === "Closed"
                                               ? "bg-emerald-50 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200 border-emerald-300 dark:border-emerald-800"
+                                              : s.slotStatus === "READY_FOR_RECRUITMENT"
+                                              ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200 border-emerald-400 font-extrabold ring-1 ring-emerald-500/20"
                                               : "bg-amber-50 text-amber-800 dark:bg-amber-950 dark:text-amber-200 border-amber-300 dark:border-amber-800"
                                           }`}
                                         >
-                                          {REQUISITION_STATUSES.map(st => (
+                                          {REQUISITION_STATUSES.filter(st => st.id !== "PENDING_ADMIN" && st.id !== "REJECTED_BY_ADMIN").map(st => (
                                             <option key={st.id} value={st.id}>{st.label}</option>
                                           ))}
                                         </select>
@@ -4017,7 +4294,14 @@
                                     </td>
 
                                     <td className="px-3 py-2.5 font-bold text-slate-900 dark:text-white">
-                                      <div>{s.jobTitle}</div>
+                                      <div className="flex items-center gap-1.5">
+                                        <span>{s.jobTitle}</span>
+                                        {s.totalSlots > 1 && (
+                                          <span className="px-1.5 py-0.2 rounded bg-sky-50 dark:bg-sky-950 text-sky-700 dark:text-sky-300 font-extrabold text-[10px] border border-sky-200 dark:border-sky-800 shrink-0">
+                                            {s.slotIndex}/{s.totalSlots}
+                                          </span>
+                                        )}
+                                      </div>
                                       <div className="text-[10px] font-normal text-slate-400">
                                         {s.positionType}
                                         {s.positionType === "Replacement" && s.replacedEmployeeName && (
@@ -4507,9 +4791,8 @@
                     </div>
 
                   </div>
-                )}
-              </div>
-            )}
+              )}
+            </div>
               </>
             )}
 
@@ -6456,7 +6739,7 @@
                 {/* Policy Notice: Strict Required */}
                 <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-[11.5px] text-amber-900 dark:text-amber-200 font-semibold flex items-center gap-2">
                   <span className="text-base">🔒</span>
-                  <span><strong>Mandatory Completion Policy (นโยบายการกรอกข้อมูล):</strong> จำเป็นต้องตอบข้อมูลให้ครบทุกช่องที่มีเครื่องหมาย <span className="text-rose-600 font-bold">*</span> หากตอบไม่ครบ ระบบจะไม่สามารถดำเนินการส่งคำขอได้</span>
+                  <span><strong>Mandatory Completion Policy (นโยบายการกรอกข้อมูล):</strong> จำเป็นต้องตอบข้อมูลให้ครบทุกช่องที่มีเครื่องหมาย <span className="text-rose-600 font-bold">*</span> (สำหรับ Department และ Division สามารถระบุเป็น "-" ได้)</span>
                 </div>
 
                 <form onSubmit={handleFormSubmit} className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
@@ -6468,6 +6751,7 @@
                       <span>Requester Information (1. ข้อมูลผู้ยื่นคำขอ)</span>
                     </h4>
                     
+                    {/* Row 1: Requester Name & Requester Position */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
@@ -6477,16 +6761,20 @@
                           value={formInput.requesterName}
                           placeholder="-- Select Requester (เลือกชื่อผู้ขอ) --"
                           options={requesterOptions}
-                          onChange={(nameEnVal) => {
-                            const person = personnelList.find(p => p.nameEn === nameEnVal || p.name === nameEnVal);
-                            setFormInput(prev => ({
-                              ...prev,
-                              requesterName: person?.nameEn || nameEnVal,
-                              requesterEmail: person?.email || prev.requesterEmail,
-                              requesterPosition: person?.position || prev.requesterPosition,
-                              department: person?.department || prev.department,
-                              division: person?.division || prev.division || "-"
-                            }));
+                          onChange={(name) => {
+                            const p = personnelList.find(x => (x.nameEn || x.name) === name);
+                            if (p) {
+                              setFormInput({
+                                ...formInput,
+                                requesterName: name,
+                                requesterPosition: p.position || "",
+                                requesterEmail: p.email || "",
+                                department: p.department || "-",
+                                division: p.division || "-"
+                              });
+                            } else {
+                              setFormInput({ ...formInput, requesterName: name });
+                            }
                           }}
                         />
                       </div>
@@ -6505,7 +6793,8 @@
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Row 2: Requester Email & Department */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
                           Requester Email (อีเมลผู้ขอ) <span className="text-rose-600 font-bold">*</span>
@@ -6521,28 +6810,31 @@
                       </div>
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Department (ฝ่ายงาน) <span className="text-rose-600 font-bold">*</span>
+                          Department (ฝ่ายงาน) <span className="text-emerald-600 dark:text-emerald-400 font-medium text-[10.5px]">(ระบุ "-" ได้)</span>
                         </label>
                         <SearchableSelect
-                          value={formInput.department}
-                          placeholder="-- Select Department (เลือกฝ่ายงาน) --"
-                          options={departmentOptions.map(d => ({ value: d, label: d }))}
-                          onChange={(dept) => setFormInput({ ...formInput, department: dept })}
+                          value={formInput.department || "-"}
+                          placeholder="-- เลือกฝ่ายงาน หรือ - --"
+                          options={departmentOptions.map(d => ({ 
+                            value: d, 
+                            label: d === "-" ? "- (ไม่ระบุ / ไม่มีสังกัดฝ่ายงาน)" : d 
+                          }))}
+                          onChange={(dept) => setFormInput({ ...formInput, department: dept || "-" })}
                         />
                       </div>
                     </div>
 
+                    {/* Row 3: Division & Candidate Supervisor */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Division (สายงาน) <span className="text-rose-600 font-bold">*</span>
+                          Division (สายงาน) <span className="text-emerald-600 dark:text-emerald-400 font-medium text-[10.5px]">(ระบุ "-" ได้)</span>
                         </label>
                         <input
                           type="text"
-                          required
-                          placeholder="e.g. People & Culture / Technology"
-                          value={formInput.division || ""}
-                          onChange={(e) => setFormInput({ ...formInput, division: e.target.value })}
+                          placeholder="e.g. People & Culture / Technology หรือ -"
+                          value={formInput.division || "-"}
+                          onChange={(e) => setFormInput({ ...formInput, division: e.target.value || "-" })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
                         />
                       </div>
@@ -7008,6 +7300,62 @@
                       </div>
                     </div>
                   </div>
+
+                  {/* Slot-by-Slot Independent Approval Table (อนุมัติแยกทีละอัตรา) */}
+                  {(selectedRequisitionDetail.slots && selectedRequisitionDetail.slots.length > 1) && (
+                    <div className="p-4 rounded-2xl bg-amber-50/60 dark:bg-amber-950/20 border-2 border-amber-300 dark:border-amber-700 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <span className="text-[10px] font-extrabold uppercase text-amber-700 dark:text-amber-300 tracking-wider block">
+                            ⚡ HEADCOUNT SLOTS APPROVAL (อนุมัติแยกรายอัตรา)
+                          </span>
+                          <h4 className="text-xs font-bold text-slate-900 dark:text-white mt-0.5">
+                            คำขอนี้มี {selectedRequisitionDetail.slots.length} อัตรา &bull; แอดมินสามารถกดยืนยันทีละอัตราแยกกันได้
+                          </h4>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 pt-1">
+                        {selectedRequisitionDetail.slots.map((s, idx) => {
+                          const isSlotApproved = s.slotStatus === "READY_FOR_RECRUITMENT" || s.slotStatus === "Recruiting" || s.slotStatus === "Closed";
+                          return (
+                            <div key={s.slotId} className="p-3 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 shadow-2xs">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-mono font-bold text-xs text-sky-600 dark:text-sky-400">Slot #{s.slotId}</span>
+                                  <span className="text-[11px] text-slate-500 font-medium">(อัตราที่ {idx + 1})</span>
+                                </div>
+                                <span className={`inline-block mt-1 text-[10px] font-extrabold px-2 py-0.5 rounded-lg border ${
+                                  isSlotApproved
+                                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border-emerald-300"
+                                    : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 border-amber-300"
+                                }`}>
+                                  {isSlotApproved ? "✅ ยืนยันแล้ว (พร้อมสรรหา)" : "⏳ รอแอดมินยืนยัน"}
+                                </span>
+                              </div>
+
+                              <div>
+                                {!isSlotApproved ? (
+                                  <button
+                                    type="button"
+                                    disabled={isApprovingEmailSending}
+                                    onClick={() => handleAdminApproveSpecificSlot(s.slotId, selectedRequisitionDetail.id)}
+                                    className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs shadow-xs transition disabled:opacity-50 flex items-center gap-1"
+                                  >
+                                    <span>✓ ยืนยันเฉพาะอัตรานี้</span>
+                                  </button>
+                                ) : (
+                                  <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                                    <span>✓ เข้าสู่กระบวนการแล้ว</span>
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Section 1: ข้อมูลผู้ยื่นคำขอ */}
                   <div className="p-4 rounded-2xl bg-slate-50/80 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 space-y-2">
@@ -7486,9 +7834,52 @@
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fadeIn">
               <div className="relative w-full max-w-xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 my-8">
                 <div className="flex items-start justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-                  <div>
+                  <div className="flex-1 mr-3">
                     <span className="text-[10px] font-bold text-brand-600 uppercase">{selectedDetailSlot.slotId}</span>
-                    <h3 className="text-lg font-bold text-slate-900 dark:text-white mt-0.5">{selectedDetailSlot.jobTitle}</h3>
+
+                    {/* Job Title with Edit Mode Support */}
+                    {isModalEditingTitle ? (
+                      <div className="mt-1 flex items-center gap-2">
+                        <input
+                          type="text"
+                          autoFocus
+                          value={modalEditTitleValue}
+                          onChange={(e) => setModalEditTitleValue(e.target.value)}
+                          className="w-full p-2 text-sm font-bold rounded-xl border border-brand-500 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateSlotJobTitle(selectedDetailSlot.slotId, modalEditTitleValue)}
+                          className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 shrink-0"
+                        >
+                          บันทึก
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIsModalEditingTitle(false)}
+                          className="px-2.5 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs shrink-0"
+                        >
+                          ยกเลิก
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <h3 className="text-lg font-bold text-slate-900 dark:text-white">{selectedDetailSlot.jobTitle}</h3>
+                        {isAdminAuthenticated && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setModalEditTitleValue(selectedDetailSlot.jobTitle || "");
+                              setIsModalEditingTitle(true);
+                            }}
+                            className="p-1 rounded-lg text-slate-400 hover:text-brand-600 hover:bg-brand-50 dark:hover:bg-brand-950 transition"
+                            title="คลิกเพื่อแก้ไขชื่อตำแหน่งงานนี้"
+                          >
+                            ✏️
+                          </button>
+                        )}
+                      </div>
+                    )}
                     <p className="text-xs text-slate-500">{selectedDetailSlot.department}</p>
                   </div>
                   <button onClick={() => setSelectedDetailSlot(null)} className="p-1.5 text-slate-400 hover:text-slate-600">
@@ -8169,7 +8560,7 @@
                         </div>
                       )}
 
-                      {/* Add Interview Evaluation Button in Slot Detail Modal (Strictly ONLY in Interview Stage) */}
+                      {/* Add Interview Evaluation Button in Slot Detail Modal (Strictly ONLY in Interview Stage - สำหรับทุกคนทั้ง User และ Admin) */}
                       {selectedDetailSlot.stage === "interview" && (
                         <div className="mt-3 pt-2.5 border-t border-emerald-200/70 dark:border-emerald-800/70 flex items-center justify-between">
                           <button
@@ -8178,7 +8569,7 @@
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-600 hover:bg-brand-700 active:scale-95 text-white font-bold text-xs shadow-xs transition cursor-pointer"
                           >
                             <Icon name="clipboardCheck" className="w-3.5 h-3.5 text-white" />
-                            <span>+ บันทึกผลประเมินสัมภาษณ์</span>
+                            <span>⭐ + บันทึกผลประเมินสัมภาษณ์</span>
                           </button>
                           <span className="text-[11px] text-slate-500 dark:text-slate-400">
                             {selectedDetailSlot.evaluationsCount > 0 ? `ประเมินแล้ว ${selectedDetailSlot.evaluationsCount} ท่าน` : "ยังไม่มีผู้ประเมิน"}
@@ -8189,24 +8580,127 @@
                   ) : (
                     <div className="p-4 text-center bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 space-y-2">
                       <p className="text-slate-400 italic text-xs">ยังไม่มีผู้สมัครจับคู่ในตำแหน่งนี้</p>
+                      {isAdminAuthenticated && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const slot = selectedDetailSlot;
+                            setSelectedDetailSlot(null);
+                            setUnassignedInterviewSlotModal(slot);
+                          }}
+                          className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs shadow-xs transition inline-flex items-center gap-1.5"
+                        >
+                          <span>👤 + เลือก Candidate สำหรับตำแหน่งนี้</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                  {isAdminAuthenticated ? (
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const slot = selectedDetailSlot;
+                          handleDuplicateSlot(slot);
+                        }}
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold text-sky-700 bg-sky-50 hover:bg-sky-100 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200 dark:border-sky-800 transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                        title="คัดลอกตำแหน่งนี้เพื่อเพิ่ม Candidate อีกคน"
+                      >
+                        <span>📋 คัดลอกตำแหน่งนี้</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
                           const slot = selectedDetailSlot;
                           setSelectedDetailSlot(null);
-                          setUnassignedInterviewSlotModal(slot);
+                          setSlotToDelete(slot);
+                          setDeletionReasonInput("");
                         }}
-                        className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs shadow-xs transition inline-flex items-center gap-1.5"
+                        className="px-3 py-1.5 rounded-xl text-xs font-bold text-rose-600 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200 dark:border-rose-800 transition flex items-center gap-1 cursor-pointer"
                       >
-                        <span>👤 + เลือก Candidate สำหรับตำแหน่งนี้</span>
+                        <span>🗑️ ลบตำแหน่งนี้</span>
                       </button>
                     </div>
+                  ) : <div />}
+                  <button onClick={() => setSelectedDetailSlot(null)} className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                    ปิด
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Admin Slot Deletion Modal with Mandatory Reason */}
+          {slotToDelete && (
+            <div className="fixed inset-0 z-[110] flex items-center justify-center p-3 sm:p-4 bg-slate-950/75 backdrop-blur-md animate-fadeIn">
+              <div className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-rose-300 dark:border-rose-900 p-6 space-y-4">
+                
+                <div className="flex items-start justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-10 h-10 rounded-2xl bg-rose-100 dark:bg-rose-950/70 text-rose-600 flex items-center justify-center text-xl shrink-0">
+                      🗑️
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-rose-600 block">
+                        ADMIN DELETION CONFIRMATION
+                      </span>
+                      <h3 className="text-base font-extrabold text-slate-900 dark:text-white mt-0.5">
+                        ยืนยันการลบตำแหน่งออกจากกระดาน
+                      </h3>
+                    </div>
+                  </div>
+                  <button onClick={() => setSlotToDelete(null)} className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                    <Icon name="x" className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-rose-50/60 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-xs space-y-1">
+                  <p><span className="text-slate-500 dark:text-slate-400">ตำแหน่งงาน:</span> <strong className="text-slate-900 dark:text-white">{slotToDelete.jobTitle}</strong></p>
+                  <p><span className="text-slate-500 dark:text-slate-400">Slot ID:</span> <strong className="text-rose-600 font-mono">#{slotToDelete.slotId}</strong></p>
+                  <p><span className="text-slate-500 dark:text-slate-400">ฝ่ายงาน:</span> <strong className="text-slate-700 dark:text-slate-300">{slotToDelete.department}</strong></p>
+                  {slotToDelete.candidateName && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold pt-1">
+                      ⚠️ มีผู้สมัครผูกอยู่: <strong>{slotToDelete.candidateName}</strong> (ระบบจะปลดการผูกกลับเข้าคลังอัตโนมัติ)
+                    </p>
                   )}
                 </div>
 
-                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end">
-                  <button onClick={() => setSelectedDetailSlot(null)} className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                    ปิด
+                <div className="space-y-1.5 text-xs">
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                    เหตุผลในการลบข้อมูล <span className="text-rose-600">* (บังคับระบุ)</span>
+                  </label>
+                  <textarea
+                    required
+                    rows="3"
+                    autoFocus
+                    placeholder="เช่น กรอกข้อมูลผิดพลาด, ยื่นคำขอซ้ำซ้อน, ยกเลิกโครงการก่อนเริ่มงาน..."
+                    value={deletionReasonInput}
+                    onChange={(e) => setDeletionReasonInput(e.target.value)}
+                    className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-rose-300 dark:border-rose-800 text-slate-900 dark:text-white font-medium focus:ring-2 focus:ring-rose-500 focus:outline-none"
+                  ></textarea>
+                  <p className="text-[10px] text-slate-400">
+                    💡 ระบบจะบันทึกเหตุผลนี้ไว้ในประวัติการดำเนินงานเพื่อการตรวจสอบ (Audit Trail)
+                  </p>
+                </div>
+
+                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setSlotToDelete(null); setDeletionReasonInput(""); }}
+                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 transition"
+                  >
+                    ยกเลิก
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!deletionReasonInput.trim()}
+                    onClick={handleConfirmDeleteSlot}
+                    className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-rose-600/20 transition flex items-center gap-1.5"
+                  >
+                    <span>ยืนยันลบออกจากกระดาน</span>
                   </button>
                 </div>
               </div>
