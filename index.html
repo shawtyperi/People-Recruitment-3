@@ -940,6 +940,11 @@
       const [draggedSlotId, setDraggedSlotId] = useState(null);
       const [dragOverStage, setDragOverStage] = useState(null);
 
+      // Refs สำหรับควบคุม Drag & Drop ให้ลื่นไหล ไม่กะพริบ และไม่เด้ง Modal ชนกับการลาก
+      const draggedSlotIdRef = useRef(null);
+      const dragOverStageRef = useRef(null);
+      const isDraggingRef = useRef(false);
+
       const triggerToast = (msg) => {
         setToastMessage(msg);
         setTimeout(() => setToastMessage(""), 3500);
@@ -1140,29 +1145,72 @@
       };
 
       const handleDragStart = (e, slotId) => {
+        draggedSlotIdRef.current = slotId;
+        isDraggingRef.current = true;
         setDraggedSlotId(slotId);
-        e.dataTransfer.setData("text/plain", slotId);
-        e.dataTransfer.effectAllowed = "move";
+        try {
+          e.dataTransfer.setData("text/plain", slotId);
+          e.dataTransfer.effectAllowed = "move";
+        } catch (err) {}
       };
 
       const handleDragOver = (e, stageId) => {
         e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        if (dragOverStage !== stageId) setDragOverStage(stageId);
+        try {
+          e.dataTransfer.dropEffect = "move";
+        } catch (err) {}
+        if (dragOverStageRef.current !== stageId) {
+          dragOverStageRef.current = stageId;
+          setDragOverStage(stageId);
+        }
       };
 
       const handleDragLeave = (e, stageId) => {
-        if (e.currentTarget.contains(e.relatedTarget)) return;
-        if (dragOverStage === stageId) setDragOverStage(null);
+        if (!e.currentTarget) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const x = e.clientX;
+        const y = e.clientY;
+        // ตรวจสอบพิกัดเมาส์จริงว่าหลุดออกจากพื้นที่ของคอลัมน์หรือไม่ เพื่อป้องกันการกระพริบตอนเลื่อนผ่านการ์ด
+        if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+          if (dragOverStageRef.current === stageId) {
+            dragOverStageRef.current = null;
+            setDragOverStage(null);
+          }
+        }
       };
 
       const handleDrop = (e, targetStage) => {
         e.preventDefault();
-        const slotId = draggedSlotId || e.dataTransfer.getData("text/plain");
+        e.stopPropagation();
+        let slotId = draggedSlotIdRef.current || draggedSlotId;
+        if (!slotId && e.dataTransfer) {
+          try {
+            slotId = e.dataTransfer.getData("text/plain");
+          } catch (err) {}
+        }
+        
+        dragOverStageRef.current = null;
         setDragOverStage(null);
         setDraggedSlotId(null);
+        draggedSlotIdRef.current = null;
+
+        // หน่วงเวลาเล็กน้อยก่อนปลด isDragging เพื่อไม่ให้การคลิกหลังปล่อยเมาส์เปิด Detail Modal ขึ้นมา
+        setTimeout(() => {
+          isDraggingRef.current = false;
+        }, 180);
+
         if (!slotId) return;
         handleInitiateStageChange(slotId, targetStage);
+      };
+
+      const handleDragEnd = () => {
+        dragOverStageRef.current = null;
+        setDragOverStage(null);
+        setDraggedSlotId(null);
+        draggedSlotIdRef.current = null;
+        setTimeout(() => {
+          isDraggingRef.current = false;
+        }, 180);
       };
 
       const syncCandidatesFromGoogleSheet = async (showToast = false) => {
@@ -3257,6 +3305,9 @@
         const slotItem = allPositionSlots.find(s => s.slotId === slotId);
         if (!slotItem) return;
 
+        // หากลากปล่อยในสเตจเดิม ไม่จำเป็นต้องดำเนินการซ้ำ
+        if (slotItem.stage === targetStage) return;
+
         // ถ้ากำลังจะย้ายเข้าด่านสัมภาษณ์ แต่ยังไม่มีผู้สมัครจับคู่ ให้เปิดหน้าต่างเลือกผู้สมัคร
         if (targetStage === "interview" && !slotItem.candidateName) {
           setUnassignedInterviewSlotModal(slotItem);
@@ -4184,26 +4235,21 @@
                               key={stage.id}
                               onDragOver={(e) => {
                                 if (!isAdminAuthenticated) return;
-                                e.preventDefault();
-                                e.dataTransfer.dropEffect = "move";
-                                if (dragOverStage !== stage.id) setDragOverStage(stage.id);
+                                handleDragOver(e, stage.id);
                               }}
                               onDragEnter={(e) => {
                                 if (!isAdminAuthenticated) return;
-                                e.preventDefault();
-                                if (dragOverStage !== stage.id) setDragOverStage(stage.id);
+                                handleDragOver(e, stage.id);
                               }}
                               onDragLeave={(e) => {
                                 if (!isAdminAuthenticated) return;
-                                if (e.currentTarget.contains(e.relatedTarget)) return;
-                                if (dragOverStage === stage.id) setDragOverStage(null);
+                                handleDragLeave(e, stage.id);
                               }}
                               onDrop={(e) => {
                                 if (!isAdminAuthenticated) return;
-                                e.preventDefault();
                                 handleDrop(e, stage.id);
                               }}
-                              className={`w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 transition-all duration-150 ${
+                              className={`w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 transition-colors duration-150 ${
                                 dragOverStage === stage.id
                                   ? 'border-brand-500 bg-brand-50/70 dark:bg-brand-950/50 ring-2 ring-brand-500/20'
                                   : draggedSlotId
@@ -4237,16 +4283,21 @@
                               <div 
                                 onDragOver={(e) => {
                                   if (!isAdminAuthenticated) return;
-                                  e.preventDefault();
-                                  e.dataTransfer.dropEffect = "move";
+                                  handleDragOver(e, stage.id);
                                 }}
                                 onDrop={(e) => {
                                   if (!isAdminAuthenticated) return;
-                                  e.preventDefault();
                                   handleDrop(e, stage.id);
                                 }}
-                                className="space-y-2.5 flex-1 overflow-y-auto max-h-[560px] pr-0.5 min-h-[120px]"
+                                className="space-y-2.5 flex-1 overflow-y-auto max-h-[560px] pr-0.5 min-h-[140px] flex flex-col"
                               >
+                                {stageItems.length === 0 && (
+                                  <div className="h-32 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 text-[11px] p-3 text-center pointer-events-none select-none my-auto">
+                                    <span>วางการ์ดที่นี่เพื่อย้ายขั้นตอน</span>
+                                    <span className="text-[10px] text-slate-400/80 mt-0.5">(Drop card here)</span>
+                                  </div>
+                                )}
+
                                 {stageItems.map(item => {
                                   const isBeingDragged = draggedSlotId === item.slotId;
                                   const priorityInfo = getPositionPriorityInfo(item);
@@ -4260,23 +4311,22 @@
                                         if (!isAdminAuthenticated) return;
                                         handleDragStart(e, item.slotId);
                                       }}
-                                      onDragEnd={() => { 
-                                        setDraggedSlotId(null); 
-                                        setDragOverStage(null); 
-                                      }}
+                                      onDragEnd={handleDragEnd}
                                       onDragOver={(e) => {
                                         if (!isAdminAuthenticated) return;
-                                        e.preventDefault();
-                                        e.dataTransfer.dropEffect = "move";
+                                        handleDragOver(e, stage.id);
                                       }}
                                       onDrop={(e) => {
                                         if (!isAdminAuthenticated) return;
-                                        e.preventDefault();
-                                        e.stopPropagation();
                                         handleDrop(e, stage.id);
                                       }}
-                                      onClick={() => setSelectedDetailSlot(item)}
-                                      className={`p-3.5 rounded-2xl border transition-all duration-150 cursor-pointer select-none group hover:shadow-sm ${
+                                      onClick={() => {
+                                        if (isDraggingRef.current) return;
+                                        setSelectedDetailSlot(item);
+                                      }}
+                                      className={`p-3.5 rounded-2xl border transition-all duration-150 select-none group hover:shadow-sm ${
+                                        isAdminAuthenticated ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
+                                      } ${
                                         isBeingDragged
                                           ? 'opacity-40 scale-98 border-sky-400 bg-sky-50/50'
                                           : item.stage === 'cancelled'
@@ -4285,13 +4335,13 @@
                                           ? 'border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/30 dark:bg-emerald-950/20'
                                           : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
                                       }`}
-                                      title={isAdminAuthenticated ? "คลิกการ์ดเพื่อดูรายละเอียด (แอดมินลากย้ายขั้นตอนได้)" : "คลิกการ์ดเพื่อดูรายละเอียดตำแหน่ง"}
+                                      title={isAdminAuthenticated ? "คลิกการ์ดเพื่อดูรายละเอียด หรือกดค้างเพื่อลากย้ายขั้นตอน" : "คลิกการ์ดเพื่อดูรายละเอียดตำแหน่ง"}
                                     >
                                       {/* Top Row: Clean Slot ID & Subtle Priority Indicator */}
                                       <div className="flex items-center justify-between text-[11px] mb-1.5">
                                         <div className="flex items-center gap-1.5">
                                           {isAdminAuthenticated && (
-                                            <span className="text-slate-300 dark:text-slate-600 font-mono text-xs cursor-grab" title="ลากเพื่อย้ายขั้นตอน">⋮⋮</span>
+                                            <span className="text-slate-300 dark:text-slate-600 font-mono text-xs cursor-grab" title="กดค้างเพื่อลากย้ายขั้นตอน">⋮⋮</span>
                                           )}
                                           <span className={`w-1.5 h-1.5 rounded-full ${priorityInfo.dotBg}`}></span>
                                           <span className="font-medium text-slate-400 dark:text-slate-500 text-[10px]">
