@@ -117,7 +117,12 @@
     const GOOGLE_CLIENT_ID = "377383810576-5rntqn8dvkbrk9l9f98ujqguhlt0snp3.apps.googleusercontent.com";
     const ALLOWED_CORPORATE_DOMAIN = "@valuesourcing.co";
     const SUPER_ADMIN_EMAIL = "wanwisa.ch@valuesourcing.co";
-    const ADMIN_EMAIL = "sarunpat.ub@valuesourcing.co";
+    const ADMIN_EMAILS = [
+      "sarunpat.ub@valuesourcing.co",
+      "contact@valuesourcing.co",
+      "admin@valuesourcing.co",
+      "hr@valuesourcing.co"
+    ];
 
     // Helper: Determine User Role & Permissions
     const getUserRoleInfo = (email) => {
@@ -133,7 +138,7 @@
           isSuperAdmin: true
         };
       }
-      if (cleanEmail === ADMIN_EMAIL.toLowerCase()) {
+      if (ADMIN_EMAILS.some(a => a.toLowerCase() === cleanEmail)) {
         return {
           role: "ADMIN",
           label: "🛡️ แอดมิน (Admin)",
@@ -1144,6 +1149,8 @@
         triggerToast("กู้คืนการ์ดทั้งหมดกลับมาแสดงบน Kanban เรียบร้อย");
       };
 
+      // 🚀 ระบบ Drag & Drop ประสิทธิภาพสูง: ใช้ Pure DOM Styling โดยไม่สั่ง React setState ระหว่างลาก
+      // ช่วยป้องกัน Chrome / Edge ไม่ให้ยกเลิกการลาก (Abort Drag) กลางคัน ทำให้ลากปล่อยติด 100%
       const handleDragStart = (e, slotId) => {
         const cleanSlotId = String(slotId).trim();
         window.__activeDraggedSlotId = cleanSlotId;
@@ -1156,10 +1163,12 @@
           e.dataTransfer.setData("application/x-slot-id", cleanSlotId);
         } catch (err) {}
 
-        // หน่วงเวลาเล็กน้อยเพื่อให้เบราว์เซอร์จับภาพ Drag Snapshot ได้สมบูรณ์ก่อน ไม่เกิดการ Abort
-        setTimeout(() => {
-          setDraggedSlotId(cleanSlotId);
-        }, 10);
+        const cardEl = e.currentTarget;
+        window.__draggedCardElement = cardEl;
+        // ปรับสไตล์ตัวการ์ดโดยตรงผ่าน DOM ทันทีโดยไม่ต้องสั่ง React Re-render
+        if (cardEl) {
+          cardEl.classList.add("opacity-40", "ring-2", "ring-sky-400");
+        }
       };
 
       const handleDragOver = (e, stageId) => {
@@ -1167,9 +1176,14 @@
         try {
           e.dataTransfer.dropEffect = "move";
         } catch (err) {}
-        if (dragOverStageRef.current !== stageId) {
-          dragOverStageRef.current = stageId;
-          setDragOverStage(stageId);
+
+        const col = e.currentTarget.closest('[data-stage-column]');
+        if (col && window.__lastOverCol !== col) {
+          if (window.__lastOverCol) {
+            window.__lastOverCol.classList.remove("border-brand-500", "bg-brand-50/70", "dark:bg-brand-950/50", "ring-2", "ring-brand-500/20");
+          }
+          window.__lastOverCol = col;
+          col.classList.add("border-brand-500", "bg-brand-50/70", "dark:bg-brand-950/50", "ring-2", "ring-brand-500/20");
         }
       };
 
@@ -1178,18 +1192,14 @@
         try {
           e.dataTransfer.dropEffect = "move";
         } catch (err) {}
-        if (dragOverStageRef.current !== stageId) {
-          dragOverStageRef.current = stageId;
-          setDragOverStage(stageId);
-        }
       };
 
       const handleDragLeave = (e, stageId) => {
-        // ตรวจสอบว่าเมาส์หลุดออกจากพื้นที่ของคอลัมน์จริง ๆ ไม่ใช่แค่ขยับไปโดน Element ย่อย
-        if (e.currentTarget && !e.currentTarget.contains(e.relatedTarget)) {
-          if (dragOverStageRef.current === stageId) {
-            dragOverStageRef.current = null;
-            setDragOverStage(null);
+        const col = e.currentTarget.closest('[data-stage-column]');
+        if (col && (!e.relatedTarget || !col.contains(e.relatedTarget))) {
+          col.classList.remove("border-brand-500", "bg-brand-50/70", "dark:bg-brand-950/50", "ring-2", "ring-brand-500/20");
+          if (window.__lastOverCol === col) {
+            window.__lastOverCol = null;
           }
         }
       };
@@ -1198,9 +1208,18 @@
         e.preventDefault();
         e.stopPropagation();
 
+        // ล้างสไตล์ของคอลัมน์และตัวการ์ดที่ถูกลาก
+        if (window.__lastOverCol) {
+          window.__lastOverCol.classList.remove("border-brand-500", "bg-brand-50/70", "dark:bg-brand-950/50", "ring-2", "ring-brand-500/20");
+          window.__lastOverCol = null;
+        }
+        if (window.__draggedCardElement) {
+          window.__draggedCardElement.classList.remove("opacity-40", "ring-2", "ring-sky-400");
+          window.__draggedCardElement = null;
+        }
+
         let slotId = window.__activeDraggedSlotId || 
-                     draggedSlotIdRef.current || 
-                     draggedSlotId;
+                     draggedSlotIdRef.current;
 
         if (!slotId && e.dataTransfer) {
           try {
@@ -1210,28 +1229,29 @@
 
         window.__activeDraggedSlotId = null;
         draggedSlotIdRef.current = null;
-        dragOverStageRef.current = null;
-        setDragOverStage(null);
-        setDraggedSlotId(null);
 
-        // ป้องกันไม่ให้การคลิกหลังปล่อยเมาส์เปิด Modal รายละเอียดขึ้นมา
         setTimeout(() => {
           isDraggingRef.current = false;
-        }, 220);
+        }, 250);
 
         if (!slotId) return;
         handleInitiateStageChange(String(slotId).trim(), targetStage);
       };
 
-      const handleDragEnd = () => {
+      const handleDragEnd = (e) => {
+        if (window.__lastOverCol) {
+          window.__lastOverCol.classList.remove("border-brand-500", "bg-brand-50/70", "dark:bg-brand-950/50", "ring-2", "ring-brand-500/20");
+          window.__lastOverCol = null;
+        }
+        if (window.__draggedCardElement) {
+          window.__draggedCardElement.classList.remove("opacity-40", "ring-2", "ring-sky-400");
+          window.__draggedCardElement = null;
+        }
         window.__activeDraggedSlotId = null;
-        dragOverStageRef.current = null;
         draggedSlotIdRef.current = null;
-        setDragOverStage(null);
-        setDraggedSlotId(null);
         setTimeout(() => {
           isDraggingRef.current = false;
-        }, 220);
+        }, 250);
       };
 
       const syncCandidatesFromGoogleSheet = async (showToast = false) => {
@@ -4257,27 +4277,12 @@
                           return (
                             <div
                               key={stage.id}
-                              onDragOver={(e) => {
-                                if (!isAdminAuthenticated) return;
-                                handleDragOver(e, stage.id);
-                              }}
-                              onDragEnter={(e) => {
-                                if (!isAdminAuthenticated) return;
-                                handleDragEnter(e, stage.id);
-                              }}
-                              onDragLeave={(e) => {
-                                if (!isAdminAuthenticated) return;
-                                handleDragLeave(e, stage.id);
-                              }}
-                              onDrop={(e) => {
-                                if (!isAdminAuthenticated) return;
-                                handleDrop(e, stage.id);
-                              }}
-                              className={`w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 transition-colors duration-150 ${
-                                dragOverStage === stage.id
-                                  ? 'border-brand-500 bg-brand-50/70 dark:bg-brand-950/50 ring-2 ring-brand-500/20'
-                                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40'
-                              }`}
+                              data-stage-column={stage.id}
+                              onDragOver={(e) => handleDragOver(e, stage.id)}
+                              onDragEnter={(e) => handleDragEnter(e, stage.id)}
+                              onDragLeave={(e) => handleDragLeave(e, stage.id)}
+                              onDrop={(e) => handleDrop(e, stage.id)}
+                              className="w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 transition-all duration-150"
                             >
                               <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-200 dark:border-slate-700 gap-1.5">
                                 <div className="flex items-center gap-1.5 truncate">
@@ -4303,26 +4308,14 @@
                               </div>
 
                               <div 
-                                onDragOver={(e) => {
-                                  if (!isAdminAuthenticated) return;
-                                  handleDragOver(e, stage.id);
-                                }}
-                                onDrop={(e) => {
-                                  if (!isAdminAuthenticated) return;
-                                  handleDrop(e, stage.id);
-                                }}
+                                onDragOver={(e) => handleDragOver(e, stage.id)}
+                                onDrop={(e) => handleDrop(e, stage.id)}
                                 className="space-y-2.5 flex-1 overflow-y-auto max-h-[560px] pr-0.5 min-h-[140px] flex flex-col"
                               >
                                 {stageItems.length === 0 && (
                                   <div 
-                                    onDragOver={(e) => {
-                                      if (!isAdminAuthenticated) return;
-                                      handleDragOver(e, stage.id);
-                                    }}
-                                    onDrop={(e) => {
-                                      if (!isAdminAuthenticated) return;
-                                      handleDrop(e, stage.id);
-                                    }}
+                                    onDragOver={(e) => handleDragOver(e, stage.id)}
+                                    onDrop={(e) => handleDrop(e, stage.id)}
                                     className="h-32 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 text-[11px] p-3 text-center select-none my-auto cursor-pointer"
                                   >
                                     <span>วางการ์ดที่นี่เพื่อย้ายขั้นตอน</span>
@@ -4331,50 +4324,39 @@
                                 )}
 
                                 {stageItems.map(item => {
-                                  const isBeingDragged = draggedSlotId === item.slotId;
                                   const priorityInfo = getPositionPriorityInfo(item);
                                   const isArrived = item.stage === "onboarded" && (item.hasAttendedFirstDayTraining || item.onboardingArrivalStatus === "arrived_reported");
+                                  const canDrag = Boolean(currentUser);
 
                                   return (
                                     <div
                                       key={item.slotId}
-                                      draggable={isAdminAuthenticated}
-                                      onDragStart={(e) => {
-                                        if (!isAdminAuthenticated) return;
-                                        handleDragStart(e, item.slotId);
-                                      }}
+                                      data-slot-card={item.slotId}
+                                      draggable={canDrag}
+                                      onDragStart={(e) => handleDragStart(e, item.slotId)}
                                       onDragEnd={handleDragEnd}
-                                      onDragOver={(e) => {
-                                        if (!isAdminAuthenticated) return;
-                                        handleDragOver(e, stage.id);
-                                      }}
-                                      onDrop={(e) => {
-                                        if (!isAdminAuthenticated) return;
-                                        handleDrop(e, stage.id);
-                                      }}
+                                      onDragOver={(e) => handleDragOver(e, stage.id)}
+                                      onDrop={(e) => handleDrop(e, stage.id)}
                                       onClick={() => {
                                         if (isDraggingRef.current) return;
                                         setSelectedDetailSlot(item);
                                       }}
-                                      className={`p-3.5 rounded-2xl border transition-colors duration-150 select-none group hover:shadow-sm ${
-                                        isAdminAuthenticated ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
+                                      className={`p-3.5 rounded-2xl border select-none group hover:shadow-sm ${
+                                        canDrag ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
                                       } ${
-                                        isBeingDragged
-                                          ? 'opacity-40 border-sky-400 bg-sky-50/50 dark:bg-sky-950/30'
-                                          : item.stage === 'cancelled'
+                                        item.stage === 'cancelled'
                                           ? 'border-slate-200 dark:border-slate-800 bg-rose-50/20 dark:bg-rose-950/10'
                                           : isArrived
                                           ? 'border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/30 dark:bg-emerald-950/20'
                                           : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
                                       }`}
-                                      title={isAdminAuthenticated ? "คลิกการ์ดเพื่อดูรายละเอียด หรือกดค้างเพื่อลากย้ายขั้นตอน" : "คลิกการ์ดเพื่อดูรายละเอียดตำแหน่ง"}
+                                      style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+                                      title="คลิกการ์ดเพื่อดูรายละเอียด หรือคลิกค้างแล้วลากการ์ดเพื่อย้ายสเตจ"
                                     >
                                       {/* Top Row: Clean Slot ID & Subtle Priority Indicator */}
-                                      <div className="flex items-center justify-between text-[11px] mb-1.5">
+                                      <div className="flex items-center justify-between text-[11px] mb-1.5 pointer-events-none">
                                         <div className="flex items-center gap-1.5">
-                                          {isAdminAuthenticated && (
-                                            <span className="text-slate-300 dark:text-slate-600 font-mono text-xs cursor-grab" title="กดค้างเพื่อลากย้ายขั้นตอน">⋮⋮</span>
-                                          )}
+                                          <span className="text-slate-400 dark:text-slate-500 font-mono text-sm leading-none" title="คลิกค้างแล้วลากเพื่อย้ายขั้นตอน">⋮⋮</span>
                                           <span className={`w-1.5 h-1.5 rounded-full ${priorityInfo.dotBg}`}></span>
                                           <span className="font-medium text-slate-400 dark:text-slate-500 text-[10px]">
                                             {priorityInfo.label.split(' ')[0]}
@@ -4422,7 +4404,7 @@
                                           </button>
                                         </div>
                                       ) : (
-                                        <div className="flex items-start justify-between gap-1 group/title">
+                                        <div className="flex items-start justify-between gap-1 group/title pointer-events-none">
                                           <h4 className="text-xs font-semibold text-slate-900 dark:text-white line-clamp-2 leading-snug group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">
                                             {item.jobTitle}
                                           </h4>
@@ -4434,7 +4416,7 @@
                                                 setEditingCardTitleSlotId(item.slotId);
                                                 setEditingCardTitleValue(item.jobTitle || "");
                                               }}
-                                              className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-sky-600 rounded transition shrink-0"
+                                              className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-sky-600 rounded transition shrink-0 pointer-events-auto"
                                               title="แก้ไขชื่อตำแหน่ง"
                                             >
                                               ✏️
@@ -4442,18 +4424,18 @@
                                           )}
                                         </div>
                                       )}
-                                      <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 truncate">
+                                      <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 truncate pointer-events-none">
                                         {item.department}
                                       </p>
 
                                       {/* Candidate Info & Actions Footer */}
                                       <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
                                         {item.candidateName ? (
-                                          <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300 truncate">
+                                          <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300 truncate pointer-events-none">
                                             👤 {item.candidateName}
                                           </span>
                                         ) : (
-                                          <span className="text-[10.5px] text-slate-400 italic">
+                                          <span className="text-[10.5px] text-slate-400 italic pointer-events-none">
                                             (ยังไม่ระบุผู้สมัคร)
                                           </span>
                                         )}
