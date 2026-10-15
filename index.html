@@ -852,7 +852,7 @@
                 });
               }
 
-              // 2. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot
+              // 2. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot เพื่อให้ User ทุกคนเห็นตรงกันเสมอ
               return baseList.map(r => {
                 const mainId = r.id;
                 const cleanId = String(mainId).replace(/-\d+$/, "");
@@ -873,6 +873,7 @@
 
                   return {
                     ...s,
+                    jobTitle: stageOverride?.jobTitle || s.jobTitle,
                     workflowStatus: newWfStatus || s.workflowStatus,
                     slotStatus: stageOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
                     stage: effectiveStage,
@@ -880,6 +881,8 @@
                     candidateName: stageOverride?.candidateName !== undefined ? stageOverride.candidateName : s.candidateName,
                     candidatePhone: stageOverride?.candidatePhone !== undefined ? stageOverride.candidatePhone : s.candidatePhone,
                     candidateNickname: stageOverride?.candidateNickname !== undefined ? stageOverride.candidateNickname : s.candidateNickname,
+                    resumeUrl: stageOverride?.resumeUrl || s.resumeUrl,
+                    driveUrl: stageOverride?.resumeUrl || s.driveUrl,
                     interviewSchedule: stageOverride?.interviewSchedule !== undefined ? stageOverride.interviewSchedule : s.interviewSchedule,
                     googleMeetUrl: stageOverride?.googleMeetUrl !== undefined ? stageOverride.googleMeetUrl : s.googleMeetUrl,
                     hireDate: stageOverride?.hireDate !== undefined ? stageOverride.hireDate : s.hireDate,
@@ -888,6 +891,7 @@
                     hasAttendedFirstDayTraining: stageOverride?.hasAttendedFirstDayTraining !== undefined ? stageOverride.hasAttendedFirstDayTraining : s.hasAttendedFirstDayTraining,
                     itEquipmentConfirmed: isItConfirmed,
                     isItNotified: isItConfirmed ? true : Boolean(stageOverride?.isItNotified || s.isItNotified),
+                    isArchivedFromKanban: stageOverride?.isArchivedFromKanban !== undefined ? Boolean(stageOverride.isArchivedFromKanban) : Boolean(s.isArchivedFromKanban),
                     evaluations: remoteEvals.length > 0 ? remoteEvals : (s.evaluations || [])
                   };
                 }).filter(Boolean);
@@ -1025,18 +1029,22 @@
         }
       };
 
-      // Auto-Polling every 5 seconds and sync on window focus
+      // Auto-Polling every 5 seconds and sync on window focus (Centralized Real-Time Sync)
       useEffect(() => {
         syncWorkflowStatus(true);
         syncRequisitionsFromGoogleSheet(false);
+        syncCandidatesFromGoogleSheet(false);
 
         const pollingInterval = setInterval(() => {
           syncWorkflowStatus(true);
+          syncRequisitionsFromGoogleSheet(false);
+          syncCandidatesFromGoogleSheet(false);
         }, 5000);
 
         const handleWindowFocus = () => {
           syncWorkflowStatus(true);
           syncRequisitionsFromGoogleSheet(false);
+          syncCandidatesFromGoogleSheet(false);
         };
 
         window.addEventListener("focus", handleWindowFocus);
@@ -1308,6 +1316,15 @@
             });
             return { ...r, slots };
           }));
+
+          // 🔄 ส่งข้อมูล Candidate ที่แก้ไขไปยังศูนย์กลางเพื่อให้ User ทุกคนเห็นทันที
+          sendCentralSlotStageUpdate(updatedCand.assignedSlotId, {
+            candidateName: updatedCand.fullName,
+            candidateNickname: updatedCand.nickname,
+            candidatePhone: updatedCand.phone,
+            resumeUrl: resolvedDrive,
+            hireDate: updatedCand.hireDate || undefined
+          });
         }
 
         setSelectedCandidateDetail(updatedCand);
@@ -1426,6 +1443,12 @@
           });
           return { ...r, slots };
         }));
+
+        // 🔄 ส่งคำสั่งซ่อนการ์ดไปยังศูนย์กลางเพื่อให้ User ทุกคนเห็นเหมือนกัน
+        selectedSlotsToClear.forEach(id => {
+          sendCentralSlotStageUpdate(id, { isArchivedFromKanban: true });
+        });
+
         triggerToast(`🧹 ซ่อนการ์ด ${selectedSlotsToClear.length} รายการออกจาก Kanban เรียบร้อย (ข้อมูลยังคงถูกบันทึกใน Manpower Request ครบถ้วน)`);
         setStageClearModal(null);
         setSelectedSlotsToClear([]);
@@ -1443,6 +1466,9 @@
           });
           return { ...r, slots };
         }));
+
+        // 🔄 ส่งคำสั่งซ่อนการ์ดไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(slotId, { isArchivedFromKanban: true });
         triggerToast(`ซ่อนการ์ด Slot #${slotId} ออกจาก Kanban เรียบร้อย (ข้อมูลยังคงถูกบันทึกใน Manpower Request ครบถ้วน)`);
       };
 
@@ -1453,6 +1479,11 @@
           const slots = r.slots.map(s => ({ ...s, isArchivedFromKanban: false }));
           return { ...r, slots };
         }));
+
+        allPositionSlots.filter(s => s.isArchivedFromKanban).forEach(s => {
+          sendCentralSlotStageUpdate(s.slotId, { isArchivedFromKanban: false });
+        });
+
         triggerToast("กู้คืนการ์ดทั้งหมดกลับมาแสดงบน Kanban เรียบร้อย");
       };
 
@@ -2338,6 +2369,7 @@
                 resumeUrl: "",
                 stage: "received",
                 interviewSchedule: "",
+                googleMeetUrl: "",
                 interviewScore: 0,
                 interviewScorePercent: 0,
                 interviewResult: "",
@@ -2348,6 +2380,17 @@
           });
           return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
+
+        // 🔄 ส่งการปลดผู้สมัครไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(targetSlotId, {
+          candidateName: "",
+          candidatePhone: "",
+          candidateNickname: "",
+          resumeUrl: "",
+          interviewSchedule: "",
+          googleMeetUrl: "",
+          stage: "received"
+        });
 
         setUnassignConfirmTarget(null);
         triggerToast(`ถอดรายชื่อผู้สมัครออกจาก Slot #${targetSlotId} เรียบร้อยแล้ว`);
@@ -2423,6 +2466,9 @@
           }
           return prev;
         });
+
+        // 🔄 ส่งชื่อตำแหน่งใหม่ไปยังศูนย์กลางเพื่อให้ User ทุกคนเห็นพร้อมกัน
+        sendCentralSlotStageUpdate(slotId, { jobTitle: trimmedTitle });
 
         setEditingCardTitleSlotId(null);
         setIsModalEditingTitle(false);
@@ -2638,10 +2684,15 @@
         }
       };
 
+      // 🌟 ฟังก์ชันเปิดหน้าต่างร่วมประเมินคะแนนสัมภาษณ์ (สำหรับทั้ง User และ Admin)
       const handleOpenBlindEvaluationModal = (slot) => {
         setBlindEvalModalSlot(slot);
+        
+        // กำหนดชื่อผู้ประเมินเริ่มต้นให้ตรงกับบัญชีผู้ใช้ที่กำลังล็อกอินอยู่
+        const loggedInName = currentUser ? (currentUser.name || currentUser.email.split('@')[0]) : "";
+
         setBlindEvalForm({
-          evaluatorName: currentUser?.name || "",
+          evaluatorName: loggedInName,
           evaluatorRole: EVALUATOR_ROLES[0],
           date: new Date().toISOString().split('T')[0],
           scores: { c1: 4, c2: 4, c3: 4, c4: 4, c5: 4 },
@@ -2709,20 +2760,25 @@
           return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
 
-        // 🔄 ส่งคะแนนประเมินไปยังศูนย์กลาง เพื่อให้ทุก User และแอดมินเห็นตรงกัน
+        // 🔄 ส่งคะแนนประเมินไปยังศูนย์กลาง เพื่อให้ User ทุกท่านและแอดมินเห็นตรงกันทันที
         sendCentralEvaluation(blindEvalModalSlot.slotId, newSubmission);
 
+        // ดึงสถานะกลางล่าสุดมารวมทันที
+        setTimeout(() => syncWorkflowStatus(true), 300);
+
         setBlindEvalModalSlot(null);
-        triggerToast(`บันทึกผลการประเมินของคุณ ${newSubmission.evaluatorName} สำเร็จ!`);
+        triggerToast(`🎉 บันทึกผลการประเมินของคุณ ${newSubmission.evaluatorName} เข้าสู่ระบบกลางเรียบร้อย!`);
       };
 
       // ฟังก์ชันยืนยันความพร้อมอุปกรณ์ IT ในสเตจ Onboarded
       const handleToggleITEquipmentConfirmed = (slotId) => {
+        let nextVal = false;
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
           const slots = r.slots.map(s => {
             if (s.slotId === slotId) {
               const nextState = !s.itEquipmentConfirmed;
+              nextVal = nextState;
               return { ...s, itEquipmentConfirmed: nextState };
             }
             return s;
@@ -2734,6 +2790,9 @@
           if (!prev || prev.slotId !== slotId) return prev;
           return { ...prev, itEquipmentConfirmed: !prev.itEquipmentConfirmed };
         });
+
+        // 🔄 ซิงค์สถานะอุปกรณ์ IT ไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(slotId, { itEquipmentConfirmed: nextVal });
 
         triggerToast("💻 อัปเดตสถานะความพร้อมอุปกรณ์ IT เรียบร้อยแล้ว");
       };
@@ -2883,6 +2942,9 @@
           return { ...r, slots };
         }));
         setSelectedDetailSlot(prev => prev?.slotId === slotId ? { ...prev, priority: newPriority } : prev);
+
+        // 🔄 ซิงค์ Priority ไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(slotId, { priority: newPriority });
         triggerToast(`ปรับระดับความสำคัญเป็น: ${newPriority}`);
       };
 
@@ -2939,6 +3001,9 @@
           };
         }));
 
+        // 🔄 ซิงค์สถานะ Slot ไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(slotId, { slotStatus: newStatus });
+
         triggerToast(`ปรับสถานะ Slot #${slotId} เป็น ${newStatus}`);
       };
 
@@ -2962,6 +3027,10 @@
         }));
 
         setSelectedDetailSlot(prev => prev?.slotId === slotId ? { ...prev, onboardingArrivalStatus: newArrivalStatus } : prev);
+
+        // 🔄 ซิงค์ไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(slotId, { onboardingArrivalStatus: newArrivalStatus });
+
         triggerToast(`อัปเดตสถานะการมารายงานตัวของ Slot #${slotId} เรียบร้อย`);
       };
 
@@ -2997,6 +3066,16 @@
         if (candidateNameToSend) {
           syncSlotToManpowerSheet(payloadToSync, true);
         }
+
+        // 🔄 ซิงค์ไปยังศูนย์กลางเพื่อให้ User ทุกคนเห็นว่ามาเริ่มงานแล้ว
+        sendCentralSlotStageUpdate(slotId, {
+          hasAttendedFirstDayTraining: true,
+          onboardingArrivalStatus: "arrived_reported",
+          slotStatus: "Closed",
+          candidateName: candidateNameToSend,
+          candidatePhone: candidatePhoneToSend,
+          hireDate: hireDateToSend
+        });
 
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
@@ -3123,6 +3202,16 @@
 
         syncSlotToClosedSheet(payloadToSync, true);
 
+        // 🔄 ซิงค์ไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(slotId, {
+          stage: "onboarded",
+          slotStatus: "Closed",
+          hireDate: hireDate,
+          candidateName: candidateName,
+          candidatePhone: candidatePhone,
+          onboardingArrivalStatus: "pending_arrival"
+        });
+
         setOnboardModalData(null);
         triggerToast(`🎉 รับเข้าทำงาน Slot #${slotId} เรียบร้อย! ซิงค์ลง Sheet Closed (GID 396528947) พร้อมลิงก์ Drive`);
       };
@@ -3166,6 +3255,14 @@
             lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
           };
         }));
+
+        // 🔄 ซิงค์เหตุผลและการยกเลิกไปยังศูนย์กลาง
+        sendCentralSlotStageUpdate(slotId, {
+          stage: isArrivalDecline ? undefined : "cancelled",
+          slotStatus: "Closed",
+          onboardingArrivalStatus: "declined_noshow",
+          rejectionReason: reason
+        });
 
         if (selectedDetailSlot && selectedDetailSlot.slotId === slotId) {
           setSelectedDetailSlot(prev => ({ 
@@ -4060,7 +4157,7 @@
                 <div className="space-y-8">
                     {/* Interactive Kanban Pipeline */}
                     <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-sm p-6">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800 mb-6">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800 mb-4">
                         <div>
                           <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
                             <Icon name="grid" className="w-5 h-5 text-brand-600" />
@@ -4068,8 +4165,8 @@
                           </h2>
                           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                             {isAdminAuthenticated
-                              ? "ลากย้ายขั้นตอน จัดการสถานะ และควบคุมกระบวนการสรรหาทั้งหมด"
-                              : "ติดตามขั้นตอนการสรรหาทุกตำแหน่ง และคลิกปุ่ม '⭐ ร่วมประเมินคะแนน' ในด่านสัมภาษณ์ได้ทันที"}
+                              ? "ลากย้ายขั้นตอน จัดการสถานะ และควบคุมกระบวนการสรรหาทั้งหมด (อัปเดตแบบ Real-time ตรงกับ User ทุกคน)"
+                              : "ติดตามขั้นตอนการสรรหาทุกตำแหน่ง และคลิกปุ่ม '⭐ ร่วมประเมิน' ในด่านสัมภาษณ์เพื่อประเมินผู้สมัครได้ทันที"}
                           </p>
                         </div>
 
@@ -4085,6 +4182,15 @@
                             </button>
                           )}
 
+                          <button
+                            onClick={() => syncWorkflowStatus(false)}
+                            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1 transition shadow-2xs"
+                            title="ซิงค์ข้อมูลกับระบบศูนย์กลางทันที"
+                          >
+                            <Icon name="refresh" className="w-3.5 h-3.5 text-brand-600" />
+                            <span className="hidden sm:inline">Sync Live</span>
+                          </button>
+
                           <div className="relative w-full sm:w-64">
                             <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
                               <Icon name="search" className="w-4 h-4" />
@@ -4097,6 +4203,18 @@
                               className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
                             />
                           </div>
+                        </div>
+                      </div>
+
+                      {/* Info Banner for Evaluation & Real-time Sync */}
+                      <div className="mb-5 p-3 rounded-2xl bg-gradient-to-r from-sky-50 via-indigo-50/50 to-emerald-50/40 dark:from-sky-950/40 dark:via-indigo-950/30 dark:to-emerald-950/30 border border-sky-200 dark:border-sky-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                        <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
+                          <span className="text-base">🌐</span>
+                          <span><strong>ระบบศูนย์กลาง (Central Hub):</strong> ข้อมูลทั้งหมดซิงค์ตรงกันแบบ Real-time ทุกหน้าจอ หากแอดมินแก้ไขข้อมูลหรือย้ายขั้นตอน User ทุกคนจะเห็นตรงกันทันที</span>
+                        </div>
+                        <div className="shrink-0 flex items-center gap-1.5 font-bold text-sky-700 dark:text-sky-300">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                          <span>Live Connected</span>
                         </div>
                       </div>
 
