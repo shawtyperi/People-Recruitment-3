@@ -180,8 +180,9 @@
 
     const GOOGLE_SHEET_DIRECTORY_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1435033662";
     const GOOGLE_SHEET_CANDIDATES_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=546067727";
+    const GOOGLE_SHEET_MANPOWER_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1528284561";
     const CANDIDATES_SHEET_EDIT_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=546067727#gid=546067727";
-    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbz8nu3dAAWAho8FEdam87tEmzgG2VtA0vv5zG_H_1yW4Fh8RfIPqeJvdwz_h7zWWK0Z6g/exec";
+    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyHPI4PYGcGTn4nDbKBW74NJJQjUyKaXJWf3OK5uIr_9peTL3UwnOGLH8wwY8-gmFqbWA/exec";
 
     const cleanCandidateName = (fullName) => {
       if (!fullName) return "";
@@ -744,12 +745,60 @@
         localStorage.setItem(PROD_CANDIDATES_KEY, JSON.stringify(candidatePool));
       }, [candidatePool]);
 
-      // Real-time Background Polling & Manual Sync Function
+      // ฟังก์ชันส่งอัปเดตสเตจและสถานะของ Slot ไปยังศูนย์กลาง (Apps Script Backend)
+      const sendCentralSlotStageUpdate = async (slotId, stagePayload) => {
+        if (!googleScriptUrl || !slotId) return;
+        try {
+          fetch(googleScriptUrl, {
+            method: "POST",
+            mode: "no-cors",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "updateSlotStage",
+              slotId: slotId,
+              ...stagePayload
+            })
+          }).catch(() => {});
+        } catch (e) {}
+      };
+
+      // ฟังก์ชันส่งผลการประเมินคะแนนสัมภาษณ์ไปยังศูนย์กลาง (Apps Script Backend)
+      const sendCentralEvaluation = async (slotId, evalData) => {
+        if (!googleScriptUrl || !slotId || !evalData) return;
+        try {
+          fetch(googleScriptUrl, {
+            method: "POST",
+            mode: "no-cors",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "saveBlindEvaluation",
+              slotId: slotId,
+              evaluation: evalData
+            })
+          }).catch(() => {});
+        } catch (e) {}
+      };
+
+      // ฟังก์ชันส่งการลบตำแหน่งไปยังศูนย์กลาง (Apps Script Backend)
+      const sendCentralSlotDeletion = async (slotId, reason) => {
+        if (!googleScriptUrl || !slotId) return;
+        try {
+          fetch(googleScriptUrl, {
+            method: "POST",
+            mode: "no-cors",
+            headers: { "Content-Type": "text/plain" },
+            body: JSON.stringify({
+              action: "deleteSlot",
+              slotId: slotId,
+              reason: reason || "Deleted by admin"
+            })
+          }).catch(() => {});
+        } catch (e) {}
+      };
+
+      // Real-time Background Polling & Manual Sync Function (Central Source of Truth)
       const syncWorkflowStatus = async (silent = true) => {
-        if (!googleScriptUrl) {
-          if (!silent) triggerToast("⚠️ กรุณาระบุ Google Apps Script Web App URL ก่อนซิงค์");
-          return;
-        }
+        if (!googleScriptUrl) return;
 
         try {
           const res = await fetch(`${googleScriptUrl}?action=getWorkflowStatuses&_t=${Date.now()}`, {
@@ -761,32 +810,89 @@
           if (resJson && resJson.status === "success") {
             const serverStatuses = resJson.data || {};
             const itConfirmedSlots = resJson.itConfirmedSlots || {};
+            const slotStages = resJson.slotStages || {};
+            const evalsMap = resJson.evaluations || {};
+            const remoteRequisitions = resJson.requisitions || [];
 
             setRequests(prevRequests => {
-              return prevRequests.map(r => {
+              // 1. รวมคำขอจากระบบกลาง Google Sheet
+              let baseList = [...prevRequests];
+              if (remoteRequisitions.length > 0) {
+                const existingMap = new Map();
+                prevRequests.forEach(r => existingMap.set(r.id, r));
+
+                baseList = remoteRequisitions.map(remReq => {
+                  const existing = existingMap.get(remReq.id);
+                  const headcount = Math.max(1, Number(remReq.headcountRequired) || 1);
+                  
+                  // สร้างหรือดึง slots เดิม
+                  let slots = existing?.slots && existing.slots.length > 0 
+                    ? [...existing.slots] 
+                    : Array.from({ length: headcount }, (_, i) => ({
+                        slotId: `${remReq.id}-${i + 1}`,
+                        slotIndex: i + 1,
+                        slotStatus: remReq.requestStatus || "PENDING_ADMIN",
+                        workflowStatus: remReq.workflowStatus || "PENDING_ADMIN",
+                        stage: remReq.stage || "received",
+                        candidateName: remReq.candidateName || "",
+                        candidatePhone: remReq.candidatePhone || "",
+                        resumeUrl: remReq.driveUrl || "",
+                        driveUrl: remReq.driveUrl || "",
+                        evaluations: []
+                      }));
+
+                  return {
+                    ...remReq,
+                    slots,
+                    ...(existing || {})
+                  };
+                });
+              }
+
+              // 2. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot
+              return baseList.map(r => {
                 const mainId = r.id;
                 const cleanId = String(mainId).replace(/-\d+$/, "");
-                const remoteItem = serverStatuses[mainId] || serverStatuses[cleanId];
+                const remoteWfItem = serverStatuses[mainId] || serverStatuses[cleanId];
 
                 const updatedSlots = (r.slots || []).map(s => {
+                  const stageOverride = slotStages[s.slotId] || slotStages[mainId];
                   const itAckFromRemote = Boolean(itConfirmedSlots[s.slotId] || itConfirmedSlots[mainId]);
-                  const newWfStatus = remoteItem?.status || s.workflowStatus;
-                  const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || newWfStatus === "READY_FOR_RECRUITMENT" || newWfStatus === "Recruiting" || newWfStatus === "Closed";
+                  const remoteEvals = evalsMap[s.slotId] || [];
+
+                  if (stageOverride?.isDeleted) {
+                    return null; // ลบออกตามคำสั่งของแอดมินกลาง
+                  }
+
+                  const newWfStatus = remoteWfItem?.status || stageOverride?.slotStatus || s.workflowStatus;
+                  const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(stageOverride?.itEquipmentConfirmed);
+                  const effectiveStage = stageOverride?.stage || (newWfStatus === "READY_FOR_RECRUITMENT" && s.stage === "received" ? "manpower" : s.stage);
 
                   return {
                     ...s,
                     workflowStatus: newWfStatus || s.workflowStatus,
+                    slotStatus: stageOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
+                    stage: effectiveStage,
+                    priority: stageOverride?.priority || s.priority || "NORMAL",
+                    candidateName: stageOverride?.candidateName !== undefined ? stageOverride.candidateName : s.candidateName,
+                    candidatePhone: stageOverride?.candidatePhone !== undefined ? stageOverride.candidatePhone : s.candidatePhone,
+                    candidateNickname: stageOverride?.candidateNickname !== undefined ? stageOverride.candidateNickname : s.candidateNickname,
+                    interviewSchedule: stageOverride?.interviewSchedule !== undefined ? stageOverride.interviewSchedule : s.interviewSchedule,
+                    googleMeetUrl: stageOverride?.googleMeetUrl !== undefined ? stageOverride.googleMeetUrl : s.googleMeetUrl,
+                    hireDate: stageOverride?.hireDate !== undefined ? stageOverride.hireDate : s.hireDate,
+                    rejectionReason: stageOverride?.rejectionReason !== undefined ? stageOverride.rejectionReason : s.rejectionReason,
+                    onboardingArrivalStatus: stageOverride?.onboardingArrivalStatus || s.onboardingArrivalStatus || "pending_arrival",
+                    hasAttendedFirstDayTraining: stageOverride?.hasAttendedFirstDayTraining !== undefined ? stageOverride.hasAttendedFirstDayTraining : s.hasAttendedFirstDayTraining,
                     itEquipmentConfirmed: isItConfirmed,
-                    isItNotified: isItConfirmed ? true : s.isItNotified,
-                    slotStatus: newWfStatus === "READY_FOR_RECRUITMENT" ? "Recruiting" : s.slotStatus,
-                    stage: newWfStatus === "READY_FOR_RECRUITMENT" && s.stage === "received" ? "manpower" : s.stage
+                    isItNotified: isItConfirmed ? true : Boolean(stageOverride?.isItNotified || s.isItNotified),
+                    evaluations: remoteEvals.length > 0 ? remoteEvals : (s.evaluations || [])
                   };
-                });
+                }).filter(Boolean);
 
-                const newStatus = remoteItem?.status;
+                const newStatus = remoteWfItem?.status;
                 return {
                   ...r,
-                  requestStatus: newStatus === "READY_FOR_RECRUITMENT" ? "Recruiting" : (newStatus || r.requestStatus),
+                  requestStatus: newStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : (newStatus || r.requestStatus),
                   workflowStatus: newStatus || r.workflowStatus,
                   slots: updatedSlots
                 };
@@ -795,35 +901,139 @@
 
             setSelectedDetailSlot(prevSlot => {
               if (!prevSlot) return null;
+              const stageOverride = slotStages[prevSlot.slotId];
               const itAck = Boolean(itConfirmedSlots[prevSlot.slotId] || itConfirmedSlots[prevSlot.parentRequestId]);
-              if (itAck && !prevSlot.itEquipmentConfirmed) {
-                return { ...prevSlot, itEquipmentConfirmed: true, isItNotified: true };
+              const remoteEvals = evalsMap[prevSlot.slotId];
+
+              if (stageOverride || itAck || remoteEvals) {
+                return {
+                  ...prevSlot,
+                  ...(stageOverride || {}),
+                  itEquipmentConfirmed: itAck || prevSlot.itEquipmentConfirmed,
+                  evaluations: remoteEvals || prevSlot.evaluations || []
+                };
               }
               return prevSlot;
             });
 
             if (!silent) {
-              triggerToast("✅ ซิงค์สถานะจาก Google Sheet ล่าสุดเรียบร้อยแล้ว!");
+              triggerToast("✅ ซิงค์ข้อมูลกลาง (Central Hub) เรียบร้อยแล้ว!");
             }
           }
         } catch (err) {
           if (!silent) {
             triggerToast("⚠️ ไม่สามารถซิงค์สถานะได้ (ตรวจสอบ Web App URL)");
-            console.error("Sync Error:", err);
           }
         }
       };
 
-      // Auto-Polling every 6 seconds and sync on window focus
+      // ดึงข้อมูลคำขอกำลังคนโดยตรงจากแผ่นงาน Google Sheet GID 1528284561
+      const syncRequisitionsFromGoogleSheet = async (showToast = false) => {
+        try {
+          const res = await fetch(GOOGLE_SHEET_MANPOWER_CSV_URL);
+          if (!res.ok) throw new Error("Network error");
+          const csvText = await res.text();
+          const rows = parseCSVText(csvText);
+
+          if (rows.length > 1) {
+            const parsedList = [];
+            for (let i = 1; i < rows.length; i++) {
+              const r = rows[i];
+              if (!r || r.length < 2) continue;
+              const reqId = (r[0] || "").trim();
+              if (!reqId || reqId.toLowerCase().includes("request")) continue;
+
+              const headcount = Math.max(1, parseInt(r[11], 10) || 1);
+              const driveUrl = (r[32] || "").trim();
+              const candName = (r[30] || "").trim();
+              const candPhone = (r[31] || "").trim();
+
+              const slots = Array.from({ length: headcount }, (_, idx) => ({
+                slotId: `${reqId}-${idx + 1}`,
+                slotIndex: idx + 1,
+                slotStatus: r[28] || "PENDING_ADMIN",
+                workflowStatus: r[28] || "PENDING_ADMIN",
+                stage: "received",
+                candidateName: candName,
+                candidatePhone: candPhone,
+                resumeUrl: driveUrl,
+                driveUrl: driveUrl,
+                evaluations: []
+              }));
+
+              parsedList.push({
+                id: reqId,
+                requestDate: (r[1] || "").trim(),
+                requesterName: (r[2] || "").trim(),
+                requesterPosition: (r[3] || "").trim(),
+                requesterEmail: (r[4] || "").trim(),
+                department: (r[5] || "-").trim(),
+                division: (r[6] || "-").trim(),
+                candidateSupervisor: (r[7] || "-").trim(),
+                approverName: (r[8] || "ศรัณย์ภัทธ อุบล").trim(),
+                approverEmail: (r[9] || "sarunpat.ub@valuesourcing.co").trim(),
+                jobTitle: (r[10] || "").trim(),
+                headcountRequired: headcount,
+                positionType: (r[12] || "Replacement").trim(),
+                replacedEmployeeName: (r[13] || "").trim(),
+                targetDate: (r[14] || "").trim(),
+                buddy: (r[15] || "").trim(),
+                workLocation: (r[16] || "Dusit Central Park").trim(),
+                gender: (r[17] || "ไม่ระบุ").trim(),
+                age: (r[18] || "ไม่จำกัด").trim(),
+                educationLevel: (r[19] || "ปริญญาตรี").trim(),
+                major: (r[20] || "-").trim(),
+                experience: (r[21] || "1-3 ปี").trim(),
+                mustHaveQualifications: (r[22] || "-").trim(),
+                jobDescription: (r[23] || "-").trim(),
+                itLaptop: (r[24] || "ต้องการ").trim(),
+                itSimCard: (r[25] || "ไม่ต้องการ").trim(),
+                itEmail: (r[26] || "ต้องการ").trim(),
+                itNetsuite: (r[27] || "ไม่ต้องการ").trim(),
+                requestStatus: (r[28] || "PENDING_ADMIN").trim(),
+                workflowStatus: (r[28] || "PENDING_ADMIN").trim(),
+                lastUpdated: (r[29] || "").trim(),
+                candidateName: candName,
+                candidatePhone: candPhone,
+                driveUrl: driveUrl,
+                resumeUrl: driveUrl,
+                slots: slots
+              });
+            }
+
+            if (parsedList.length > 0) {
+              setRequests(prev => {
+                const map = new Map();
+                parsedList.forEach(item => map.set(item.id, item));
+                prev.forEach(item => {
+                  if (map.has(item.id)) {
+                    map.set(item.id, { ...map.get(item.id), ...item });
+                  } else {
+                    map.set(item.id, item);
+                  }
+                });
+                return Array.from(map.values());
+              });
+              if (showToast) triggerToast(`ซิงค์ Requisitions จาก Google Sheet สำเร็จ (${parsedList.length} รายการ)`);
+            }
+          }
+        } catch (e) {
+          if (showToast) triggerToast("เชื่อมต่อข้อมูลชีทล้มเหลว");
+        }
+      };
+
+      // Auto-Polling every 5 seconds and sync on window focus
       useEffect(() => {
         syncWorkflowStatus(true);
+        syncRequisitionsFromGoogleSheet(false);
 
         const pollingInterval = setInterval(() => {
           syncWorkflowStatus(true);
-        }, 6000);
+        }, 5000);
 
         const handleWindowFocus = () => {
           syncWorkflowStatus(true);
+          syncRequisitionsFromGoogleSheet(false);
         };
 
         window.addEventListener("focus", handleWindowFocus);
@@ -2018,6 +2228,17 @@
           return { ...r, stage: "interview", slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
 
+        // 🔄 ส่งข้อมูลอัปเดตไปยังศูนย์กลางทันที
+        sendCentralSlotStageUpdate(targetSlot.slotId, {
+          stage: "interview",
+          slotStatus: "READY_FOR_RECRUITMENT",
+          candidateName: candidate.fullName,
+          candidatePhone: candidate.phone,
+          candidateNickname: candidate.nickname,
+          interviewSchedule: scheduledInfo,
+          googleMeetUrl: meetUrlClean
+        });
+
         setScheduleAssignModalData(null);
         setUnassignedInterviewSlotModal(null);
         triggerToast(`แมปคุณ ${candidate.fullName} เข้าสู่ Slot #${targetSlot.slotId} สำเร็จ`);
@@ -2321,6 +2542,9 @@
           }).filter(Boolean);
         });
 
+        // 3. แจ้งลบไปยังศูนย์กลาง Apps Script เพื่อให้ทุกหน้าต่างลบการ์ดนี้ออก
+        sendCentralSlotDeletion(targetSlotId, reason);
+
         if (selectedDetailSlot && selectedDetailSlot.slotId === targetSlotId) {
           setSelectedDetailSlot(null);
         }
@@ -2383,6 +2607,13 @@
             return r;
           }));
 
+          // 🔄 ส่งอัปเดตสเตจของ Slot นี้ไปยังศูนย์กลาง
+          sendCentralSlotStageUpdate(slotId, {
+            stage: "manpower",
+            slotStatus: "READY_FOR_RECRUITMENT",
+            parentRequestId: reqId
+          });
+
           if (selectedRequisitionDetail) {
             setSelectedRequisitionDetail(prev => {
               if (!prev) return null;
@@ -2412,7 +2643,7 @@
       const handleOpenBlindEvaluationModal = (slot) => {
         setBlindEvalModalSlot(slot);
         setBlindEvalForm({
-          evaluatorName: "",
+          evaluatorName: currentUser?.name || "",
           evaluatorRole: EVALUATOR_ROLES[0],
           date: new Date().toISOString().split('T')[0],
           scores: { c1: 4, c2: 4, c3: 4, c4: 4, c5: 4 },
@@ -2479,6 +2710,9 @@
           });
           return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
+
+        // 🔄 ส่งคะแนนประเมินไปยังศูนย์กลาง เพื่อให้ทุก User และแอดมินเห็นตรงกัน
+        sendCentralEvaluation(blindEvalModalSlot.slotId, newSubmission);
 
         setBlindEvalModalSlot(null);
         triggerToast(`บันทึกผลการประเมินของคุณ ${newSubmission.evaluatorName} สำเร็จ!`);
@@ -2988,6 +3222,12 @@
           return r;
         }));
 
+        // 🔄 ส่งขั้นตอนใหม่ไปยังศูนย์กลาง Apps Script ทันที
+        sendCentralSlotStageUpdate(targetSlotId, {
+          stage: targetStage,
+          offerSentDate: targetStage === "offer" ? todayStr : undefined
+        });
+
         triggerToast(`อัปเดต Slot #${targetSlotId} เป็น ${targetStage}`);
       };
 
@@ -3212,7 +3452,17 @@
             return r;
           }));
 
-          // Background sync to Google Sheet if configured (without sending email)
+          // 🔄 ส่งอัปเดตสถานะของทุก Slot ในคำขอนี้ไปยังศูนย์กลาง Apps Script
+          const headcount = Math.max(1, Number(targetReq.headcountRequired) || 1);
+          for (let i = 1; i <= headcount; i++) {
+            sendCentralSlotStageUpdate(`${parentReqId}-${i}`, {
+              stage: "manpower",
+              slotStatus: "READY_FOR_RECRUITMENT",
+              parentRequestId: parentReqId
+            });
+          }
+
+          // Background sync to Google Sheet
           if (googleScriptUrl) {
             fetch(googleScriptUrl, {
               method: "POST",
