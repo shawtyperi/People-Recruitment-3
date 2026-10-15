@@ -1597,20 +1597,20 @@
                 const remoteWfItem = serverStatuses[mainId] || serverStatuses[cleanId];
 
                 const updatedSlots = (r.slots || []).map(s => {
+                  // สำคัญ: อ้างอิงเฉพาะ slotId ของตนเองเท่านั้น (ตัด mainOverride ออก ป้องกันการดึงสเตจตามกัน)
                   const slotOverride = slotStages[s.slotId];
-                  const mainOverride = slotStages[mainId];
                   const itAckFromRemote = Boolean(itConfirmedSlots[s.slotId] || itConfirmedSlots[mainId]);
                   const remoteEvals = evalsMap[s.slotId] || [];
 
                   // ตรวจสอบการลบถาวร
-                  if (slotOverride?.isDeleted || mainOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
+                  if (slotOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
                     return null;
                   }
 
-                  const newWfStatus = remoteWfItem?.status || slotOverride?.slotStatus || mainOverride?.slotStatus || s.workflowStatus;
+                  const newWfStatus = slotOverride?.slotStatus || remoteWfItem?.status || s.workflowStatus;
                   const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(slotOverride?.itEquipmentConfirmed);
                   
-                  // สเตจจริง: เคารพเฉพาะสเตจของ Slot ตนเองเท่านั้น (ไม่ดึงสเตจของ Requisition แม่มาทับ Slot อื่น)
+                  // สเตจจริง: เคารพเฉพาะสเตจของ Slot ตนเองเท่านั้น 100%
                   let effectiveStage = s.stage;
                   const recent = recentLocalStageUpdates.current.get(s.slotId);
                   if (recent && (Date.now() - recent.timestamp < 10000)) {
@@ -1621,7 +1621,7 @@
 
                   return {
                     ...s,
-                    jobTitle: slotOverride?.jobTitle || mainOverride?.jobTitle || s.jobTitle,
+                    jobTitle: slotOverride?.jobTitle || s.jobTitle,
                     workflowStatus: newWfStatus || s.workflowStatus,
                     slotStatus: slotOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
                     stage: effectiveStage,
@@ -1693,7 +1693,7 @@
         }
       };
 
-      // ดึงข้อมูลคำขอกำลังคนโดยตรงจากแผ่นงาน Google Sheet GID 1528284561
+      // ดึงข้อมูลคำขอกำลังคนโดยตรงจากแผ่นงาน Google Sheet GID 1528284561 (ไม่ทับ Stage ของ Slot ที่ถูกย้ายแล้ว)
       const syncRequisitionsFromGoogleSheet = async (showToast = false) => {
         try {
           const res = await fetch(GOOGLE_SHEET_MANPOWER_CSV_URL);
@@ -1715,7 +1715,6 @@
               const candPhone = (r[31] || "").trim();
               const rawReqStatus = (r[28] || "").trim();
 
-              // คำนวณ Stage เริ่มต้นของคำขอ
               let defaultReqStage = "received";
               if (rawReqStatus === "READY_FOR_RECRUITMENT" || rawReqStatus === "Recruiting") {
                 defaultReqStage = "manpower";
@@ -1723,7 +1722,7 @@
                 defaultReqStage = "onboarded";
               }
 
-              // ผู้สมัครจากชีทจะถูกกำหนดให้กับ Slot แรกเท่านั้น ส่วน Slot ถัดไปจะเป็นอัตราว่างรอการสรรหา
+              // สร้าง Slot ให้ครบทุกอัตราแบบ 1:1 พร้อมระบุ slotIndex และ totalSlots ที่ถูกต้องเสมอ
               const slots = Array.from({ length: headcount }, (_, idx) => {
                 const isFirstSlot = idx === 0;
                 const slotCandName = isFirstSlot ? candName : "";
@@ -1734,6 +1733,7 @@
                 return {
                   slotId: `${reqId}-${idx + 1}`,
                   slotIndex: idx + 1,
+                  totalSlots: headcount,
                   slotStatus: rawReqStatus || "PENDING_ADMIN",
                   workflowStatus: rawReqStatus || "PENDING_ADMIN",
                   stage: slotStage,
@@ -1832,42 +1832,18 @@
         }
       };
 
-      // Auto-Polling every 3 seconds and sync on window focus (Real-Time Multi-User Sync)
-      useEffect(() => {
-        syncWorkflowStatus(true);
-        syncRequisitionsFromGoogleSheet(false);
-        syncCandidatesFromGoogleSheet(false);
-
-        const pollingInterval = setInterval(() => {
-          syncWorkflowStatus(true);
-        }, 3000);
-
-        const handleWindowFocus = () => {
-          syncWorkflowStatus(true);
-          syncRequisitionsFromGoogleSheet(false);
-          syncCandidatesFromGoogleSheet(false);
-        };
-
-        window.addEventListener("focus", handleWindowFocus);
-
-        return () => {
-          clearInterval(pollingInterval);
-          window.removeEventListener("focus", handleWindowFocus);
-        };
-      }, [googleScriptUrl]);
-
-      // All position slots with individual slotStatus (Recruiting vs Closed)
+      // All position slots with individual slotStatus and perfectly calculated slot ratios (e.g. 1/3, 2/3, 3/3)
       const allPositionSlots = useMemo(() => {
         return requests.flatMap(r => {
           const headcount = Math.max(1, Number(r.headcountRequired) || (r.slots?.length || 1));
           
-          // ตรวจสอบและสร้าง Slot ให้ครบทุกอัตราแบบ 1:1 เสมอ (ป้องกันการรวมกลุ่มหรือขาด Slot)
           let currentSlots = (r.slots && r.slots.length > 0) ? [...r.slots] : [];
           if (currentSlots.length < headcount) {
             for (let i = currentSlots.length + 1; i <= headcount; i++) {
               currentSlots.push({
                 slotId: `${r.id}-${i}`,
                 slotIndex: i,
+                totalSlots: headcount,
                 slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
                 workflowStatus: r.workflowStatus || "READY_FOR_RECRUITMENT",
                 candidateName: "",
@@ -1891,7 +1867,7 @@
           const actualTotalSlots = Math.max(currentSlots.length, headcount);
 
           return currentSlots.map((slot, sIdx) => {
-            const actualSlotIndex = slot.slotIndex || (sIdx + 1);
+            const actualSlotIndex = Number(slot.slotIndex) || (sIdx + 1);
             const matchedCand = candidatePool.find(c => 
               (c.assignedSlotId && c.assignedSlotId === slot.slotId) || 
               (slot.candidateName && c.fullName && c.fullName.trim().toLowerCase() === slot.candidateName.trim().toLowerCase()) ||
@@ -1901,13 +1877,12 @@
             const currentEvals = slot.evaluations || [];
             const evalStats = calculateOverallScore(currentEvals);
 
-            // แยกสถานะการยกเลิกเป็นราย Slot อย่างเด็ดขาด (ไม่เอา r.stage รวมมาปน)
+            // แยกสถานะการยกเลิกเป็นราย Slot อย่างเด็ดขาด
             const isCancelled = slot.stage === "cancelled";
             const arrivalStatus = isCancelled
               ? "declined_noshow"
               : (slot.onboardingArrivalStatus || "pending_arrival");
 
-            // Workflow status of requisition & slot
             const slotWfStatus = slot.workflowStatus || slot.slotStatus || r.workflowStatus || r.requestStatus || "PENDING_ADMIN";
             
             // 🔒 กำหนดสเตจเฉพาะ Slot นี้แบบอิสระ
@@ -3287,8 +3262,7 @@
         setRejectionModalData(null);
         triggerToast(`บันทึกเหตุผลเรียบร้อย! ล็อกสถานะเป็น "❌ สละสิทธิ์ / ไม่มาเริ่มงาน" สีแดง และปิด Slot #${slotId}`);
       };
-
-      // Direct Stage Update
+      // Direct Stage Update for a SINGLE slot
       const updateSlotStageDirectly = (targetSlotId, targetStage) => {
         // 🔒 เฉพาะ Admin เท่านั้นที่สามารถเปลี่ยนขั้นตอนได้
         if (!isAdminAuthenticated) {
@@ -3314,6 +3288,7 @@
               currentSlots.push({
                 slotId: `${r.id}-${i}`,
                 slotIndex: i,
+                totalSlots: headcount,
                 slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
                 workflowStatus: r.workflowStatus || "READY_FOR_RECRUITMENT",
                 stage: "received",
