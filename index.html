@@ -955,6 +955,32 @@
         setTimeout(() => setToastMessage(""), 3500);
       };
 
+      // 🌟 Real-time Lifecycle: เริ่มต้นดึงข้อมูลทันทีเมื่อเปิดแอป และตั้งเวลา Polling อัตโนมัติทุก 4 วินาที
+      useEffect(() => {
+        // 1. ดึงข้อมูลพื้นฐานจาก Google Sheets
+        syncRequisitionsFromGoogleSheet(false);
+        syncCandidatesFromGoogleSheet(false);
+
+        // 2. ดึงสถานะกลางล่าสุดจาก Central Engine ทันที
+        syncWorkflowStatus(true);
+
+        // 3. ตัวจับเวลา Polling ทำงานต่อเนื่องทุก 4 วินาที
+        const intervalId = setInterval(() => {
+          syncWorkflowStatus(true);
+        }, 4000);
+
+        // 4. เมื่อผู้ใช้คลิกสลับแท็บกลับมาหน้าจอ ให้ดึงข้อมูลสดทันที
+        const handleWindowFocus = () => {
+          syncWorkflowStatus(true);
+        };
+        window.addEventListener("focus", handleWindowFocus);
+
+        return () => {
+          clearInterval(intervalId);
+          window.removeEventListener("focus", handleWindowFocus);
+        };
+      }, [googleScriptUrl]);
+
       const handleUserLogout = () => {
         localStorage.removeItem("vs_corporate_auth_token_v2");
         setCurrentUser(null);
@@ -1563,7 +1589,7 @@
         try {
           let resJson = null;
 
-          // 1. ลองดึงข้อมูลด้วย fetch ปกติก่อน (ไม่ส่ง Custom Header เพื่อไม่ให้เกิด Preflight OPTIONS error)
+          // 1. ดึงข้อมูลด้วย fetch ปกติก่อน (ไม่ส่ง Custom Header ป้องกัน Preflight OPTIONS error)
           try {
             const fetchUrl = `${googleScriptUrl}?action=getWorkflowStatuses&_t=${Date.now()}`;
             const res = await fetch(fetchUrl);
@@ -1581,6 +1607,7 @@
             const slotStages = resJson.slotStages || {};
             const evalsMap = resJson.evaluations || {};
             const deletedMap = resJson.deletedSlots || {};
+            const customReqs = resJson.customRequisitions || [];
 
             const timeNow = new Date().toLocaleTimeString("th-TH", { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             setSyncHealth({
@@ -1591,7 +1618,15 @@
 
             // 1. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot เพื่อให้ User ทุกคนเห็นตรงกันเสมอ
             setRequests(prevRequests => {
-              return prevRequests.map(r => {
+              // เพิ่มคำขอที่ถูกสร้างใหม่จากเครื่องอื่นเข้าสู่ state
+              let mergedReqList = [...prevRequests];
+              customReqs.forEach(cReq => {
+                if (cReq && cReq.id && !mergedReqList.some(r => r.id === cReq.id)) {
+                  mergedReqList.unshift(cReq);
+                }
+              });
+
+              return mergedReqList.map(r => {
                 const mainId = r.id;
                 const cleanId = String(mainId).replace(/-\d+$/, "");
                 const remoteWfItem = serverStatuses[mainId] || serverStatuses[cleanId];
@@ -1600,7 +1635,8 @@
                   // สำคัญ: อ้างอิงเฉพาะ slotId ของตนเองเท่านั้น (ตัด mainOverride ออก ป้องกันการดึงสเตจตามกัน)
                   const slotOverride = slotStages[s.slotId];
                   const itAckFromRemote = Boolean(itConfirmedSlots[s.slotId] || itConfirmedSlots[mainId]);
-                  const remoteEvals = evalsMap[s.slotId] || [];
+                  const remoteEvals = Array.isArray(evalsMap[s.slotId]) ? evalsMap[s.slotId] : [];
+                  const localEvals = Array.isArray(s.evaluations) ? s.evaluations : [];
 
                   // ตรวจสอบการลบถาวร
                   if (slotOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
@@ -1610,14 +1646,36 @@
                   const newWfStatus = slotOverride?.slotStatus || remoteWfItem?.status || s.workflowStatus;
                   const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(slotOverride?.itEquipmentConfirmed);
                   
-                  // สเตจจริง: เคารพเฉพาะสเตจของ Slot ตนเองเท่านั้น 100%
+                  // สเตจจริง: เคารพเฉพาะสเตจของ Slot ตนเองเท่านั้น และปกป้องไม่ให้ถูกเซิร์ฟเวอร์เก่าดึงกลับ
                   let effectiveStage = s.stage;
                   const recent = recentLocalStageUpdates.current.get(s.slotId);
-                  if (recent && (Date.now() - recent.timestamp < 10000)) {
+                  if (recent && (Date.now() - recent.timestamp < 15000)) {
                     effectiveStage = recent.stage;
                   } else if (slotOverride?.stage) {
                     effectiveStage = slotOverride.stage;
                   }
+
+                  // ตรวจสอบชื่อแคนดิเดต: ไม่ยอมให้เซิร์ฟเวอร์ทับด้วยค่าว่างหากในเครื่องมีชื่ออยู่แล้ว
+                  let effectiveCandName = s.candidateName;
+                  if (slotOverride?.candidateName && slotOverride.candidateName.trim()) {
+                    effectiveCandName = slotOverride.candidateName.trim();
+                  } else if (recent && recent.candidateName) {
+                    effectiveCandName = recent.candidateName;
+                  }
+
+                  // หากมีชื่อแคนดิเดตผูกอยู่ สเตจต้องไม่อยู่ใน received
+                  if (effectiveCandName && effectiveStage === "received") {
+                    effectiveStage = "interview";
+                  }
+
+                  // รวมผลการประเมินโดยไม่ทำคะแนนในเครื่องสูญหาย
+                  const mergedEvals = [...localEvals];
+                  remoteEvals.forEach(re => {
+                    if (re && re.id && !mergedEvals.some(le => le.id === re.id)) {
+                      mergedEvals.push(re);
+                    }
+                  });
+                  const overallStats = calculateOverallScore(mergedEvals);
 
                   return {
                     ...s,
@@ -1626,7 +1684,7 @@
                     slotStatus: slotOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
                     stage: effectiveStage,
                     priority: slotOverride?.priority || s.priority || "NORMAL",
-                    candidateName: slotOverride?.candidateName !== undefined ? slotOverride.candidateName : s.candidateName,
+                    candidateName: effectiveCandName,
                     candidatePhone: slotOverride?.candidatePhone !== undefined ? slotOverride.candidatePhone : s.candidatePhone,
                     candidateNickname: slotOverride?.candidateNickname !== undefined ? slotOverride.candidateNickname : s.candidateNickname,
                     resumeUrl: slotOverride?.resumeUrl || s.resumeUrl,
@@ -1640,7 +1698,11 @@
                     itEquipmentConfirmed: isItConfirmed,
                     isItNotified: isItConfirmed ? true : Boolean(slotOverride?.isItNotified || s.isItNotified),
                     isArchivedFromKanban: slotOverride?.isArchivedFromKanban !== undefined ? Boolean(slotOverride.isArchivedFromKanban) : Boolean(s.isArchivedFromKanban),
-                    evaluations: remoteEvals.length > 0 ? remoteEvals : (s.evaluations || [])
+                    evaluations: mergedEvals,
+                    evaluationsCount: mergedEvals.length,
+                    interviewScore: mergedEvals.length > 0 ? overallStats.combinedAvg : (s.interviewScore || 0),
+                    interviewScorePercent: mergedEvals.length > 0 ? overallStats.combinedPct : (s.interviewScorePercent || 0),
+                    interviewResult: mergedEvals.length > 0 ? overallStats.result : (s.interviewResult || "")
                   };
                 }).filter(Boolean);
 
@@ -1658,17 +1720,27 @@
               if (!prevSlot) return null;
               const stageOverride = slotStages[prevSlot.slotId];
               const itAck = Boolean(itConfirmedSlots[prevSlot.slotId] || itConfirmedSlots[prevSlot.parentRequestId]);
-              const remoteEvals = evalsMap[prevSlot.slotId];
+              const remoteEvals = Array.isArray(evalsMap[prevSlot.slotId]) ? evalsMap[prevSlot.slotId] : [];
+              const localEvals = Array.isArray(prevSlot.evaluations) ? prevSlot.evaluations : [];
 
-              if (stageOverride || itAck || remoteEvals) {
-                return {
-                  ...prevSlot,
-                  ...(stageOverride || {}),
-                  itEquipmentConfirmed: itAck || prevSlot.itEquipmentConfirmed,
-                  evaluations: remoteEvals || prevSlot.evaluations || []
-                };
-              }
-              return prevSlot;
+              const mergedEvals = [...localEvals];
+              remoteEvals.forEach(re => {
+                if (re && re.id && !mergedEvals.some(le => le.id === re.id)) {
+                  mergedEvals.push(re);
+                }
+              });
+              const overallStats = calculateOverallScore(mergedEvals);
+
+              return {
+                ...prevSlot,
+                ...(stageOverride || {}),
+                itEquipmentConfirmed: itAck || prevSlot.itEquipmentConfirmed,
+                evaluations: mergedEvals,
+                evaluationsCount: mergedEvals.length,
+                interviewScore: mergedEvals.length > 0 ? overallStats.combinedAvg : (prevSlot.interviewScore || 0),
+                interviewScorePercent: mergedEvals.length > 0 ? overallStats.combinedPct : (prevSlot.interviewScorePercent || 0),
+                interviewResult: mergedEvals.length > 0 ? overallStats.result : (prevSlot.interviewResult || "")
+              };
             });
 
             if (!silent) {
@@ -2708,7 +2780,7 @@
         const pct = Math.round((total / 25) * 100);
 
         const newSubmission = {
-          id: `eval-${Date.now()}`,
+          id: `eval-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
           evaluatorName: blindEvalForm.evaluatorName.trim(),
           evaluatorRole: blindEvalForm.evaluatorRole,
           date: blindEvalForm.date,
@@ -2721,18 +2793,32 @@
           recommendation: blindEvalForm.recommendation
         };
 
+        const targetSlotId = blindEvalModalSlot.slotId;
+
+        // 🔒 ล็อกสถานะสเตจในเครื่องไว้ 15 วินาทีเพื่อป้องกันไม่ให้เซิร์ฟเวอร์เก่าดึงกลับ
+        recentLocalStageUpdates.current.set(targetSlotId, {
+          stage: blindEvalModalSlot.stage || "interview",
+          candidateName: blindEvalModalSlot.candidateName,
+          timestamp: Date.now() + 15000
+        });
+
+        // 1. อัปเดตใน state requests ทันที
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
           const slots = r.slots.map(s => {
-            if (s.slotId === blindEvalModalSlot.slotId) {
-              const updatedEvals = [...(s.evaluations || []), newSubmission];
+            if (s.slotId === targetSlotId) {
+              const existingEvals = s.evaluations || [];
+              const updatedEvals = existingEvals.some(ev => ev.id === newSubmission.id)
+                ? existingEvals
+                : [...existingEvals, newSubmission];
               const overall = calculateOverallScore(updatedEvals);
               return {
                 ...s,
                 interviewScore: overall.combinedAvg,
                 interviewScorePercent: overall.combinedPct,
                 interviewResult: overall.result,
-                evaluations: updatedEvals
+                evaluations: updatedEvals,
+                evaluationsCount: updatedEvals.length
               };
             }
             return s;
@@ -2740,14 +2826,30 @@
           return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
 
-        // 🔄 ส่งคะแนนประเมินไปยังศูนย์กลาง เพื่อให้ User ทุกท่านและแอดมินเห็นตรงกันทันที
-        sendCentralEvaluation(blindEvalModalSlot.slotId, newSubmission);
+        // 2. อัปเดตใน selectedDetailSlot ทันทีเพื่อให้แสดงผลใน Modal ทันทีโดยไม่หาย
+        setSelectedDetailSlot(prev => {
+          if (!prev || prev.slotId !== targetSlotId) return prev;
+          const existingEvals = prev.evaluations || [];
+          const updatedEvals = existingEvals.some(ev => ev.id === newSubmission.id)
+            ? existingEvals
+            : [...existingEvals, newSubmission];
+          const overall = calculateOverallScore(updatedEvals);
+          return {
+            ...prev,
+            evaluations: updatedEvals,
+            evaluationsCount: updatedEvals.length,
+            interviewScore: overall.combinedAvg,
+            interviewScorePercent: overall.combinedPct,
+            interviewResult: overall.result
+          };
+        });
 
-        // ดึงสถานะกลางล่าสุดมารวมทันที
-        setTimeout(() => syncWorkflowStatus(true), 300);
+        // 3. ส่งคะแนนประเมินไปยังศูนย์กลาง Google Apps Script
+        sendCentralEvaluation(targetSlotId, newSubmission);
 
+        // 4. ปิด Modal ประเมิน
         setBlindEvalModalSlot(null);
-        triggerToast(`🎉 บันทึกผลการประเมินของคุณ ${newSubmission.evaluatorName} เข้าสู่ระบบกลางเรียบร้อย!`);
+        triggerToast(`🎉 บันทึกผลการประเมินของคุณ ${newSubmission.evaluatorName} สำเร็จแล้ว!`);
       };
 
       // ฟังก์ชันยืนยันความพร้อมอุปกรณ์ IT ในสเตจ Onboarded
@@ -3202,7 +3304,7 @@
       const handleConfirmRejectionAndSave = (e) => {
         e.preventDefault();
         if (!rejectionModalData) return;
-        const { slotId, isArrivalDecline } = rejectionModalData;
+        const { slotId, slotItem, isArrivalDecline } = rejectionModalData;
         const reason = rejectionReasonInput.trim();
         if (!reason) {
           triggerToast("⚠️ กรุณาระบุเหตุผลในการสละสิทธิ์ / ยกเลิกตำแหน่ง");
@@ -3272,9 +3374,14 @@
 
         const cleanSlotId = String(targetSlotId).trim();
         const todayStr = new Date().toISOString().split('T')[0];
+        const slotItem = allPositionSlots.find(s => s.slotId === cleanSlotId);
 
-        // บันทึกสเตจใหม่ใน Local Ref เฉพาะ Slot ID นี้เท่านั้น 100%
-        recentLocalStageUpdates.current.set(cleanSlotId, { stage: targetStage, timestamp: Date.now() });
+        // บันทึกสเตจใหม่ใน Local Ref เฉพาะ Slot ID นี้เท่านั้น 100% ป้องกันการดึงกลับ
+        recentLocalStageUpdates.current.set(cleanSlotId, {
+          stage: targetStage,
+          candidateName: slotItem?.candidateName || "",
+          timestamp: Date.now() + 15000
+        });
 
         setRequests(prev => prev.map(r => {
           const parentReqId = String(cleanSlotId).replace(/-\d+$/, "");
@@ -3338,6 +3445,7 @@
         // 🔄 ส่งขั้นตอนใหม่ไปยังศูนย์กลาง Apps Script ทันทีเฉพาะรหัส Slot นี้
         sendCentralSlotStageUpdate(cleanSlotId, {
           stage: targetStage,
+          candidateName: slotItem?.candidateName || "",
           offerSentDate: targetStage === "offer" ? todayStr : undefined
         });
 
@@ -3793,7 +3901,8 @@
                     </div>
                   ) : null}
 
-                  {currentUser && (
+                  {/* เฉพาะ Admin เท่านั้นที่สามารถสร้างคำขอกำลังคนใหม่ได้ */}
+                  {isAdminAuthenticated && (
                     <button
                       onClick={() => setShowRequestModal(true)}
                       className="inline-flex items-center gap-1.5 px-4 py-2 sm:px-4 sm:py-2.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-brand-600 to-sky-500 hover:from-brand-700 hover:to-sky-600 shadow-md shadow-brand-500/20 transition active:scale-95 cursor-pointer"
@@ -3915,11 +4024,11 @@
             </div>
 
             <div className="space-y-6">
-              {/* Navigation Tabs - แสดงตามสิทธิ์ (Admin เห็น 1, 2, 3 / User เห็นเฉพาะ 2) */}
+              {/* Navigation Tabs - แสดงตามสิทธิ์ (Admin เห็นครบทุกแท็บ 1, 2, 3 / User เห็นเฉพาะหน้ากระดานแบบ View-Only) */}
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 dark:border-slate-800 pb-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* หน้า 1: Requisition Queue (แอดมินเท่านั้น) */}
-                  {isAdminAuthenticated && (
+                {isAdminAuthenticated ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* หน้า 1: Requisition Queue (แอดมินเท่านั้น) */}
                     <button
                       onClick={() => setAdminSubTab("requisitions")}
                       className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-2 ${
@@ -3936,27 +4045,21 @@
                         </span>
                       )}
                     </button>
-                  )}
 
-                  {/* หน้า 2: Kanban Pipeline (ทุกคนเข้าถึงได้เพื่อร่วมติดตามและประเมินผล) */}
-                  <button
-                    onClick={() => setAdminSubTab("kanban")}
-                    className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                      adminSubTab === "kanban"
-                        ? "bg-brand-600 text-white shadow-md shadow-brand-500/20"
-                        : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200/70 dark:border-slate-700 hover:bg-slate-100"
-                    }`}
-                  >
-                    <Icon name="grid" className="w-3.5 h-3.5" />
-                    <span>
-                      {isAdminAuthenticated
-                        ? "2. Kanban Pipeline & Demand (2. กระดานและอัตรากำลังคน)"
-                        : "📋 Kanban Pipeline & Evaluation (กระดานสรรหาและร่วมประเมินคะแนน)"}
-                    </span>
-                  </button>
+                    {/* หน้า 2: Kanban Pipeline (แอดมิน) */}
+                    <button
+                      onClick={() => setAdminSubTab("kanban")}
+                      className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                        adminSubTab === "kanban"
+                          ? "bg-brand-600 text-white shadow-md shadow-brand-500/20"
+                          : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200/70 dark:border-slate-700 hover:bg-slate-100"
+                      }`}
+                    >
+                      <Icon name="grid" className="w-3.5 h-3.5" />
+                      <span>2. Kanban Pipeline &amp; Demand (2. กระดานและอัตรากำลังคน)</span>
+                    </button>
 
-                  {/* หน้า 3: Candidate Pool & Requisitions (แอดมินเท่านั้น) */}
-                  {isAdminAuthenticated && (
+                    {/* หน้า 3: Candidate Pool & Requisitions (แอดมินเท่านั้น) */}
                     <button
                       onClick={() => setAdminSubTab("candidates")}
                       className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
@@ -3968,12 +4071,19 @@
                       <Icon name="userSearch" className="w-3.5 h-3.5" />
                       <span>3. Candidate Pool &amp; Requisitions (3. คลังผู้สมัครและแบบขอกำลังคน)</span>
                     </button>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="px-4 py-2 rounded-xl bg-brand-600 text-white text-xs font-bold shadow-sm flex items-center gap-2">
+                      <Icon name="grid" className="w-4 h-4 text-white" />
+                      <span>📋 Kanban Pipeline (กระดานติดตามสถานะการสรรหา)</span>
+                    </div>
+                  </div>
+                )}
 
                 {!isAdminAuthenticated && (
                   <div className="flex items-center gap-1.5 text-xs text-sky-800 dark:text-sky-200 bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 px-3 py-1.5 rounded-xl font-medium">
-                    <span>👥 <strong>โหมดพนักงาน (User View):</strong> ดูข้อมูลความคืบหน้า และคลิก <span className="font-bold text-brand-600">⭐ ร่วมประเมิน</span> ในด่านสัมภาษณ์ได้ (สิทธิ์การย้ายขั้นตอนสงวนไว้สำหรับ Admin เท่านั้น)</span>
+                    <span>👁️ <strong>โหมดดูข้อมูล (View Only):</strong> สิทธิ์การแก้ไขและย้ายสเตจสงวนสำหรับแอดมิน (สามารถกดปุ่ม <span className="font-bold text-brand-600">⭐ ร่วมประเมิน</span> ในด่านสัมภาษณ์ได้)</span>
                   </div>
                 )}
               </div>
@@ -8953,14 +9063,16 @@
                           <p><strong>Work Location:</strong> {selectedDetailSlot.workLocation || candidatePool.find(c => c.assignedSlotId === selectedDetailSlot.slotId || (selectedDetailSlot.candidateName && c.fullName === selectedDetailSlot.candidateName))?.branch || selectedDetailSlot.branch || "Dusit Central Park"}</p>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleSendITNotification(selectedDetailSlot)}
-                          className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 active:scale-95 text-white font-bold text-xs shadow-md shadow-purple-500/20 transition flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <Icon name="send" className="w-3.5 h-3.5 text-white" />
-                          <span>{selectedDetailSlot.isItNotified ? "ส่งอีเมลแจ้งทีม IT ซ้ำอีกครั้ง" : "ส่ง Email ข้อมูลไปให้ทางทีม IT (people@valuesourcing.co)"}</span>
-                        </button>
+                        {isAdminAuthenticated && (
+                          <button
+                            type="button"
+                            onClick={() => handleSendITNotification(selectedDetailSlot)}
+                            className="w-full py-2 px-3 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 active:scale-95 text-white font-bold text-xs shadow-md shadow-purple-500/20 transition flex items-center justify-center gap-1.5 cursor-pointer"
+                          >
+                            <Icon name="send" className="w-3.5 h-3.5 text-white" />
+                            <span>{selectedDetailSlot.isItNotified ? "ส่งอีเมลแจ้งทีม IT ซ้ำอีกครั้ง" : "ส่ง Email ข้อมูลไปให้ทางทีม IT (people@valuesourcing.co)"}</span>
+                          </button>
+                        )}
                       </div>
 
                       {/* ขั้นที่ 3: เมื่อ IT กดรับทราบ -> ให้ขึ้นเป็นสีเขียวเด่นชัด */}
@@ -8986,7 +9098,7 @@
                             <p className="text-[10.5px] text-slate-500 dark:text-slate-400 pl-6">
                               {selectedDetailSlot.itEquipmentConfirmed
                                 ? "ทีม IT ได้ยืนยันรับทราบและอุปกรณ์คอมพิวเตอร์/สิทธิ์ระบบพร้อมแล้ว"
-                                : "รอทีม IT กดปุ่มยืนยันรับทราบในอีเมล (หรือแอดมินคลิกยืนยันแทนได้)"}
+                                : "รอทีม IT กดปุ่มยืนยันรับทราบในอีเมล"}
                             </p>
                           </div>
 
@@ -8996,16 +9108,18 @@
                                 <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-extrabold text-xs shadow-xs">
                                   <span>✅ IT รับทราบ &amp; อุปกรณ์พร้อมแล้ว</span>
                                 </span>
-                                <button
-                                  type="button"
-                                  onClick={() => handleToggleITEquipmentConfirmed(selectedDetailSlot.slotId)}
-                                  className="text-[10px] text-slate-400 hover:text-slate-600 underline"
-                                  title="คลิกหากต้องการยกเลิก"
-                                >
-                                  แก้ไข
-                                </button>
+                                {isAdminAuthenticated && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleToggleITEquipmentConfirmed(selectedDetailSlot.slotId)}
+                                    className="text-[10px] text-slate-400 hover:text-slate-600 underline"
+                                    title="คลิกหากต้องการยกเลิก"
+                                  >
+                                    แก้ไข
+                                  </button>
+                                )}
                               </div>
-                            ) : (
+                            ) : isAdminAuthenticated ? (
                               <button
                                 type="button"
                                 onClick={() => handleToggleITEquipmentConfirmed(selectedDetailSlot.slotId)}
@@ -9013,6 +9127,10 @@
                               >
                                 ⏳ คลิกยืนยันแทน IT: อุปกรณ์พร้อมแล้ว
                               </button>
+                            ) : (
+                              <span className="text-[11px] font-semibold text-amber-600 bg-amber-50 dark:bg-amber-950/40 px-2.5 py-1 rounded-lg border border-amber-200 dark:border-amber-900">
+                                ⏳ รอ IT ยืนยันอุปกรณ์
+                              </span>
                             )}
                           </div>
                         </div>
@@ -9040,19 +9158,24 @@
                             </span>
                             <p className="text-[10.5px] text-slate-500 dark:text-slate-400 pl-6">
                               เป้าหมายเริ่มงาน: <strong className="text-rose-600 dark:text-rose-400">{selectedDetailSlot.hireDate || "ยังไม่ระบุ"}</strong>
-                              {" "}&bull; เมื่อกดยืนยันว่าพนักงานมาเริ่มงานแล้ว ระบบจะปรับสถานะเป็น Closed (ปิดการสรรหา) ให้ทันที
                             </p>
                           </div>
 
                           <div className="shrink-0 pl-6 sm:pl-0">
                             {!(selectedDetailSlot.hasAttendedFirstDayTraining || selectedDetailSlot.onboardingArrivalStatus === "arrived_reported") ? (
-                              <button
-                                type="button"
-                                onClick={() => handleConfirmFirstDayTraining(selectedDetailSlot.slotId)}
-                                className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs shadow-md active:scale-95 flex items-center gap-1.5 transition cursor-pointer"
-                              >
-                                <span>✓ ยืนยันมาเริ่มงาน &amp; ปิดจบตำแหน่ง (Closed)</span>
-                              </button>
+                              isAdminAuthenticated ? (
+                                <button
+                                  type="button"
+                                  onClick={() => handleConfirmFirstDayTraining(selectedDetailSlot.slotId)}
+                                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-bold text-xs shadow-md active:scale-95 flex items-center gap-1.5 transition cursor-pointer"
+                                >
+                                  <span>✓ ยืนยันมาเริ่มงาน &amp; ปิดจบตำแหน่ง (Closed)</span>
+                                </button>
+                              ) : (
+                                <span className="text-[11px] font-semibold text-slate-500 bg-slate-100 dark:bg-slate-800 px-3 py-1 rounded-lg">
+                                  ⏳ รอถึงกำหนดวันเริ่มงาน
+                                </span>
+                              )
                             ) : (
                               <div className="flex items-center gap-2">
                                 <span className="inline-flex items-center gap-1 px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-extrabold text-xs shadow-xs">
@@ -9094,7 +9217,7 @@
 
                         <div className="flex items-center gap-1">
                           <select
-                            disabled={selectedDetailSlot.onboardingArrivalStatus === "declined_noshow"}
+                            disabled={!isAdminAuthenticated || selectedDetailSlot.onboardingArrivalStatus === "declined_noshow"}
                             value={selectedDetailSlot.onboardingArrivalStatus || "pending_arrival"}
                             onChange={(e) => handleUpdateOnboardingArrivalStatus(selectedDetailSlot.slotId, e.target.value)}
                             className={`text-xs font-extrabold px-3 py-1.5 rounded-xl border transition ${
