@@ -1856,7 +1856,10 @@
                 evaluations: []
               }));
 
-          return slots.map(slot => {
+          const actualTotalSlots = Math.max(slots.length, headcount);
+
+          return slots.map((slot, sIdx) => {
+            const actualSlotIndex = slot.slotIndex || (sIdx + 1);
             const matchedCand = candidatePool.find(c => 
               (c.assignedSlotId && c.assignedSlotId === slot.slotId) || 
               (slot.candidateName && c.fullName && c.fullName.trim().toLowerCase() === slot.candidateName.trim().toLowerCase()) ||
@@ -1902,8 +1905,8 @@
             return {
               ...r,
               slotId: slot.slotId,
-              slotIndex: slot.slotIndex,
-              totalSlots: headcount,
+              slotIndex: actualSlotIndex,
+              totalSlots: actualTotalSlots,
               slotStatus: slotEffectiveStatus,
               workflowStatus: slotWfStatus,
               requestStatus: slotEffectiveStatus,
@@ -4167,7 +4170,7 @@
                                         <div className="flex items-center gap-1 font-mono text-[10.5px] text-slate-400">
                                           <span>{item.slotId}</span>
                                           {item.totalSlots > 1 && (
-                                            <span className="font-semibold text-[9.5px] px-1.5 py-0.2 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300" title={`อัตราที่ ${item.slotIndex} จากทั้งหมด ${item.totalSlots} อัตรา`}>
+                                            <span className="font-extrabold text-[9.5px] px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300 border border-sky-300 dark:border-sky-700 shadow-2xs" title={`อัตราที่ ${item.slotIndex} จากทั้งหมด ${item.totalSlots} อัตรา`}>
                                               {item.slotIndex}/{item.totalSlots}
                                             </span>
                                           )}
@@ -8089,7 +8092,14 @@
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 mt-0.5">
-                        <h3 className="text-lg font-bold text-slate-900 dark:text-white">{selectedDetailSlot.jobTitle}</h3>
+                        <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                          <span>{selectedDetailSlot.jobTitle}</span>
+                          {selectedDetailSlot.totalSlots > 1 && (
+                            <span className="text-xs font-extrabold px-2 py-0.5 rounded-lg bg-sky-100 dark:bg-sky-950 text-sky-700 dark:text-sky-300 border border-sky-300 dark:border-sky-800">
+                              อัตราที่ {selectedDetailSlot.slotIndex}/{selectedDetailSlot.totalSlots}
+                            </span>
+                          )}
+                        </h3>
                         {isAdminAuthenticated && (
                           <button
                             type="button"
