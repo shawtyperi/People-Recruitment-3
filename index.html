@@ -534,7 +534,7 @@
       const handleSelect = (optVal) => {
         onChange(optVal);
         setIsOpen(false);
-        setSearchTerm("");
+        setSearchTerm(optVal || "");
       };
 
       return (
@@ -558,9 +558,12 @@
                   const val = e.target.value;
                   setSearchTerm(val);
                   if (!isOpen) setIsOpen(true);
-                  if (val === "" || val === "-" || val.trim() === "-") {
-                    onChange("-");
-                  }
+                  onChange(val);
+                }
+              }}
+              onBlur={() => {
+                if (!searchTerm || !searchTerm.trim() || searchTerm.trim() === "-") {
+                  onChange("-");
                 }
               }}
               className="w-full px-3.5 py-2 text-xs rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 transition shadow-2xs font-semibold pr-8 cursor-pointer text-slate-800 dark:text-slate-100 placeholder-slate-400"
@@ -3283,12 +3286,11 @@
       const handleFormSubmit = (e) => {
         e.preventDefault();
 
-        // 🔒 ตรวจสอบความถูกต้องของข้อมูล: บังคับกรอกทุกช่อง ห้ามว่าง และห้ามใส่ "-"
+        // 🔒 ตรวจสอบความถูกต้องของข้อมูล: บังคับกรอกทุกช่อง ห้ามว่าง และห้ามใส่ "-" (ยกเว้นช่องที่อนุญาตให้มี - ได้)
         const strictlyRequiredFields = [
           { val: formInput.requesterName, name: "Requester Name - EN (ชื่อผู้ขอภาษาอังกฤษ)" },
           { val: formInput.requesterPosition, name: "Requester Position (ตำแหน่งผู้ขอ)" },
           { val: formInput.requesterEmail, name: "Requester Email (อีเมลผู้ขอ)" },
-          { val: formInput.department, name: "Department (ฝ่ายงาน)" },
           { val: formInput.division, name: "Division (สายงาน)" },
           { val: formInput.candidateSupervisor, name: "Candidate Supervisor - EN (หัวหน้างานของ Candidate)" },
           { val: formInput.approverName, name: "Approver Name (ชื่อผู้อนุมัติ)" },
@@ -3329,7 +3331,7 @@
           return;
         }
 
-        // 3 ช่องที่อนุญาตให้ระบุข้อมูลจริงหรือใส่ "-" ได้ (ห้ามเว้นว่างเปล่า)
+        // ช่องที่อนุญาตให้ระบุข้อมูลจริงหรือใส่ "-" ได้ (ห้ามเว้นว่างเปล่า แต่ใส่ "-" ได้)
         const allowedDashFields = [
           { val: formInput.major, name: "Major / Field of Study (สาขาวิชา)" },
           { val: formInput.mustHaveQualifications, name: "Must-Have Qualifications (คุณสมบัติจำเป็น)" },
@@ -3337,7 +3339,7 @@
         ];
 
         const missingAllowedDash = allowedDashFields.filter(item => {
-          if (!item.val) return true;
+          if (item.val === undefined || item.val === null) return true;
           const s = String(item.val).trim();
           return s === "";
         });
@@ -3347,9 +3349,12 @@
           return;
         }
 
+        // Department: กรอกชื่อฝ่าย หรือขึ้นเป็น "-" หรือเว้นว่าง ระบบจะอนุญาตและจัดเก็บค่าได้อย่างถูกต้องเสมอ
+        const deptValue = (formInput.department && String(formInput.department).trim()) ? String(formInput.department).trim() : "-";
+
         const sanitizedForm = {
           ...formInput,
-          department: String(formInput.department || "").trim(),
+          department: deptValue,
           division: String(formInput.division || "").trim(),
           major: String(formInput.major || "-").trim() || "-",
           mustHaveQualifications: String(formInput.mustHaveQualifications || "-").trim() || "-",
@@ -7139,14 +7144,17 @@
                         />
                       </div>
                       <div>
-                        <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Department (ฝ่ายงาน) <span className="text-rose-500 font-bold">*</span>
-                        </label>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300">
+                            Department (ฝ่ายงาน)
+                          </label>
+                          <span className="text-[10px] text-slate-400 font-medium">กรอกชื่อฝ่าย หรือใส่ "-" ได้</span>
+                        </div>
                         <SearchableSelect
-                          value={formInput.department}
-                          placeholder="-- เลือกฝ่ายงาน --"
-                          options={departmentOptions.filter(d => d && d !== "-")}
-                          onChange={(dept) => setFormInput({ ...formInput, department: dept || "" })}
+                          value={formInput.department || "-"}
+                          placeholder="-- เลือกฝ่ายงาน หรือพิมพ์ - --"
+                          options={departmentOptions}
+                          onChange={(dept) => setFormInput({ ...formInput, department: dept || "-" })}
                         />
                       </div>
                     </div>
