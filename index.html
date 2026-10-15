@@ -3023,11 +3023,13 @@
       const handleFormSubmit = (e) => {
         e.preventDefault();
 
-        // 🔒 ตรวจสอบความถูกต้องของข้อมูล (Department และ Division สามารถระบุเป็น "-" หรือเว้นว่างได้ 100%)
-        const requiredValidationRules = [
+        // 🔒 ตรวจสอบความถูกต้องของข้อมูล: บังคับกรอกทุกช่อง ห้ามว่าง และห้ามใส่ "-"
+        const strictlyRequiredFields = [
           { val: formInput.requesterName, name: "Requester Name - EN (ชื่อผู้ขอภาษาอังกฤษ)" },
           { val: formInput.requesterPosition, name: "Requester Position (ตำแหน่งผู้ขอ)" },
           { val: formInput.requesterEmail, name: "Requester Email (อีเมลผู้ขอ)" },
+          { val: formInput.department, name: "Department (ฝ่ายงาน)" },
+          { val: formInput.division, name: "Division (สายงาน)" },
           { val: formInput.candidateSupervisor, name: "Candidate Supervisor - EN (หัวหน้างานของ Candidate)" },
           { val: formInput.approverName, name: "Approver Name (ชื่อผู้อนุมัติ)" },
           { val: formInput.approverEmail, name: "Approver Email (อีเมลผู้อนุมัติ)" },
@@ -3040,10 +3042,7 @@
           { val: formInput.gender, name: "Gender (เพศ)" },
           { val: formInput.age, name: "Age Range (ช่วงอายุ)" },
           { val: formInput.educationLevel, name: "Education Level (ระดับการศึกษา)" },
-          { val: formInput.major, name: "Major / Field of Study (สาขาวิชา)" },
           { val: formInput.experience, name: "Work Experience (ประสบการณ์ทำงาน)" },
-          { val: formInput.mustHaveQualifications, name: "Must-Have Qualifications (คุณสมบัติจำเป็น)" },
-          { val: formInput.jobDescription, name: "Job Description (ลักษณะงานโดยย่อ)" },
           { val: formInput.itLaptop, name: "Laptop / PC Requirement (ความต้องการคอมพิวเตอร์)" },
           { val: formInput.itSimCard, name: "Sim Card Requirement (ความต้องการซิมการ์ด)" },
           { val: formInput.itEmail, name: "Corporate Email Requirement (ความต้องการอีเมลองค์กร)" },
@@ -3052,35 +3051,49 @@
 
         // กรณีเป็น Replacement บังคับระบุชื่อพนักงานที่ถูกทดแทนด้วย
         if (formInput.positionType === "Replacement") {
-          requiredValidationRules.push({
+          strictlyRequiredFields.push({
             val: formInput.replacedEmployeeName,
             name: "Replaced Employee Name (ชื่อพนักงานเดิมที่ถูกทดแทน)"
           });
         }
 
-        const missingFields = requiredValidationRules.filter(item => {
+        // ตรวจสอบช่องที่บังคับอย่างเคร่งครัด
+        const missingStrict = strictlyRequiredFields.filter(item => {
           if (!item.val) return true;
           const s = String(item.val).trim();
-          return s === "" || s === "-";
+          return s === "" || s === "-" || s === "—";
         });
 
-        if (missingFields.length > 0) {
-          triggerToast(`⚠️ ข้อมูลไม่ครบถ้วน: กรุณาระบุ "${missingFields[0].name}" (ยังเหลืออีก ${missingFields.length} ช่องที่ต้องตอบ)`);
+        if (missingStrict.length > 0) {
+          triggerToast(`⚠️ ข้อมูลไม่ครบถ้วน: กรุณาระบุ "${missingStrict[0].name}" (ยังเหลืออีก ${missingStrict.length} ช่องที่ต้องตอบ)`);
           return;
         }
 
-        // จัดการค่า Department และ Division: หากระบุ "-" หรือเว้นว่าง ให้ส่งค่าเป็น "-" อย่างถูกต้อง 100%
-        const sanitizedDepartment = (formInput.department && String(formInput.department).trim() && String(formInput.department).trim() !== "") 
-          ? String(formInput.department).trim() 
-          : "-";
-        const sanitizedDivision = (formInput.division && String(formInput.division).trim() && String(formInput.division).trim() !== "") 
-          ? String(formInput.division).trim() 
-          : "-";
+        // 3 ช่องที่อนุญาตให้ระบุข้อมูลจริงหรือใส่ "-" ได้ (ห้ามเว้นว่างเปล่า)
+        const allowedDashFields = [
+          { val: formInput.major, name: "Major / Field of Study (สาขาวิชา)" },
+          { val: formInput.mustHaveQualifications, name: "Must-Have Qualifications (คุณสมบัติจำเป็น)" },
+          { val: formInput.jobDescription, name: "Job Description (ลักษณะงานโดยย่อ)" }
+        ];
+
+        const missingAllowedDash = allowedDashFields.filter(item => {
+          if (!item.val) return true;
+          const s = String(item.val).trim();
+          return s === "";
+        });
+
+        if (missingAllowedDash.length > 0) {
+          triggerToast(`⚠️ กรุณากรอกข้อมูลหรือระบุ "-" ในช่อง "${missingAllowedDash[0].name}"`);
+          return;
+        }
 
         const sanitizedForm = {
           ...formInput,
-          department: sanitizedDepartment,
-          division: sanitizedDivision
+          department: String(formInput.department || "").trim(),
+          division: String(formInput.division || "").trim(),
+          major: String(formInput.major || "-").trim() || "-",
+          mustHaveQualifications: String(formInput.mustHaveQualifications || "-").trim() || "-",
+          jobDescription: String(formInput.jobDescription || "-").trim() || "-"
         };
 
         // แสดงหน้าต่างตรวจสอบสรุปข้อมูลก่อนส่งคำขอจริง
@@ -6730,13 +6743,13 @@
                   </button>
                 </div>
 
-                {/* Policy Notice: Strict Required */}
-                <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-[11.5px] text-amber-900 dark:text-amber-200 font-semibold flex items-center gap-2">
-                  <span className="text-base">🔒</span>
-                  <span><strong>Mandatory Completion Policy (นโยบายการกรอกข้อมูล):</strong> จำเป็นต้องตอบข้อมูลให้ครบทุกช่องที่มีเครื่องหมาย <span className="text-rose-600 font-bold">*</span> (สำหรับ Department และ Division สามารถระบุเป็น "-" ได้)</span>
+                {/* Policy Notice */}
+                <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700 text-[11.5px] text-slate-700 dark:text-slate-300 font-medium flex items-center gap-2">
+                  <span className="text-base">📋</span>
+                  <span>กรุณาระบุข้อมูลตำแหน่งงานและคุณสมบัติให้ครบถ้วนเพื่อส่งให้แอดมินดำเนินการสรรหา</span>
                 </div>
 
-                <form onSubmit={handleFormSubmit} className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
+                <form onSubmit={handleFormSubmit} noValidate className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
                   
                   {/* Section 1: Requester Details */}
                   <div className="p-4 rounded-2xl bg-slate-50/70 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700 space-y-3">
@@ -6749,11 +6762,11 @@
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Requester Name - EN (ชื่อผู้ขอภาษาอังกฤษ) <span className="text-rose-600 font-bold">*</span>
+                          Requester Name - EN (ชื่อผู้ขอภาษาอังกฤษ) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <SearchableSelect
                           value={formInput.requesterName}
-                          placeholder="-- Select Requester (เลือกชื่อผู้ขอ) --"
+                          placeholder="-- เลือกชื่อผู้ขอ --"
                           options={requesterOptions}
                           onChange={(name) => {
                             const p = personnelList.find(x => (x.nameEn || x.name) === name);
@@ -6763,8 +6776,8 @@
                                 requesterName: name,
                                 requesterPosition: p.position || "",
                                 requesterEmail: p.email || "",
-                                department: p.department || "-",
-                                division: p.division || "-"
+                                department: (p.department && p.department !== "-") ? p.department : formInput.department,
+                                division: (p.division && p.division !== "-") ? p.division : formInput.division
                               });
                             } else {
                               setFormInput({ ...formInput, requesterName: name });
@@ -6774,11 +6787,10 @@
                       </div>
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Requester Position (ตำแหน่งผู้ขอ) <span className="text-rose-600 font-bold">*</span>
+                          Requester Position (ตำแหน่งผู้ขอ) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <input
                           type="text"
-                          required
                           placeholder="e.g. People Team Lead"
                           value={formInput.requesterPosition}
                           onChange={(e) => setFormInput({ ...formInput, requesterPosition: e.target.value })}
@@ -6791,11 +6803,10 @@
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Requester Email (อีเมลผู้ขอ) <span className="text-rose-600 font-bold">*</span>
+                          Requester Email (อีเมลผู้ขอ) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <input
                           type="email"
-                          required
                           placeholder="requester@valuesourcing.co"
                           value={formInput.requesterEmail}
                           onChange={(e) => setFormInput({ ...formInput, requesterEmail: e.target.value })}
@@ -6804,16 +6815,13 @@
                       </div>
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Department (ฝ่ายงาน) <span className="text-emerald-600 dark:text-emerald-400 font-medium text-[10.5px]">(ระบุ "-" ได้)</span>
+                          Department (ฝ่ายงาน) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <SearchableSelect
-                          value={formInput.department || "-"}
-                          placeholder="-- เลือกฝ่ายงาน หรือ - --"
-                          options={departmentOptions.map(d => ({ 
-                            value: d, 
-                            label: d === "-" ? "- (ไม่ระบุ / ไม่มีสังกัดฝ่ายงาน)" : d 
-                          }))}
-                          onChange={(dept) => setFormInput({ ...formInput, department: dept || "-" })}
+                          value={formInput.department}
+                          placeholder="-- เลือกฝ่ายงาน --"
+                          options={departmentOptions.filter(d => d && d !== "-")}
+                          onChange={(dept) => setFormInput({ ...formInput, department: dept || "" })}
                         />
                       </div>
                     </div>
@@ -6822,23 +6830,23 @@
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Division (สายงาน) <span className="text-emerald-600 dark:text-emerald-400 font-medium text-[10.5px]">(ระบุ "-" ได้)</span>
+                          Division (สายงาน) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <input
                           type="text"
-                          placeholder="e.g. People & Culture / Technology หรือ -"
-                          value={formInput.division || "-"}
-                          onChange={(e) => setFormInput({ ...formInput, division: e.target.value || "-" })}
+                          placeholder="e.g. People & Culture / Technology"
+                          value={formInput.division}
+                          onChange={(e) => setFormInput({ ...formInput, division: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
                         />
                       </div>
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Candidate Supervisor - EN (หัวหน้างานของผู้สมัคร) <span className="text-rose-600 font-bold">*</span>
+                          Candidate Supervisor - EN (หัวหน้างานของผู้สมัคร) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <SearchableSelect
                           value={formInput.candidateSupervisor}
-                          placeholder="-- Select Candidate Supervisor (เลือกหัวหน้างาน) --"
+                          placeholder="-- เลือกหัวหน้างาน --"
                           options={supervisorOptions}
                           onChange={(supVal) => setFormInput({ ...formInput, candidateSupervisor: supVal })}
                         />
@@ -6861,7 +6869,7 @@
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-sky-900 dark:text-sky-300">
-                          Approver Name (ชื่อผู้อนุมัติ) <span className="text-rose-600 font-bold">*</span>
+                          Approver Name (ชื่อผู้อนุมัติ)
                         </label>
                         <input
                           type="text"
@@ -6873,10 +6881,10 @@
                       </div>
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-sky-900 dark:text-sky-300">
-                          Approver Email (อีเมลผู้อนุมัติ) <span className="text-rose-600 font-bold">*</span>
+                          Approver Email (อีเมลผู้อนุมัติ)
                         </label>
                         <input
-                          type="email"
+                          type="text"
                           disabled
                           readOnly
                           value="sarunpat.ub@valuesourcing.co"
@@ -6896,11 +6904,10 @@
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div className="sm:col-span-2">
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Job Title (ชื่อตำแหน่งงานที่ต้องการรับ) <span className="text-rose-600 font-bold">*</span>
+                          Job Title (ชื่อตำแหน่งงานที่ต้องการรับ) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <input
                           type="text"
-                          required
                           placeholder="e.g. Senior Full-Stack AI Engineer"
                           value={formInput.jobTitle}
                           onChange={(e) => setFormInput({ ...formInput, jobTitle: e.target.value })}
@@ -6910,14 +6917,14 @@
 
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Headcount Required (จำนวนอัตรา) <span className="text-rose-600 font-bold">*</span>
+                          Headcount Required (จำนวนอัตรา) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <input
                           type="number"
                           min="1"
-                          required
+                          placeholder="1"
                           value={formInput.headcountRequired}
-                          onChange={(e) => setFormInput({ ...formInput, headcountRequired: e.target.value })}
+                          onChange={(e) => setFormInput({ ...formInput, headcountRequired: Math.max(1, parseInt(e.target.value, 10) || 1) })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-bold text-center"
                         />
                       </div>
@@ -6926,10 +6933,9 @@
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Position Type (ประเภทตำแหน่ง) <span className="text-rose-600 font-bold">*</span>
+                          Position Type (ประเภทตำแหน่ง) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.positionType}
                           onChange={(e) => setFormInput({ ...formInput, positionType: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
@@ -6941,24 +6947,23 @@
 
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Target Start Date (ต้องการให้เริ่มงานภายในวันที่) <span className="text-rose-600 font-bold">*</span>
+                          Target Start Date (ต้องการให้เริ่มงานภายในวันที่) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <input
                           type="date"
-                          required
                           value={formInput.targetDate}
                           onChange={(e) => setFormInput({ ...formInput, targetDate: e.target.value })}
-                          className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
+                          className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold text-xs"
                         />
                       </div>
 
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Buddy / Mentor - EN (พี่เลี้ยงภาษาอังกฤษ) <span className="text-rose-600 font-bold">*</span>
+                          Buddy / Mentor - EN (พี่เลี้ยงภาษาอังกฤษ) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <SearchableSelect
                           value={formInput.buddy}
-                          placeholder="-- Select Buddy - EN (เลือกพี่เลี้ยง) --"
+                          placeholder="-- เลือกพี่เลี้ยง --"
                           options={buddyOptions}
                           onChange={(buddyName) => setFormInput({ ...formInput, buddy: buddyName })}
                         />
@@ -6967,10 +6972,9 @@
 
                     <div>
                       <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                        Work Location (สถานที่ปฏิบัติงาน) <span className="text-rose-600 font-bold">*</span>
+                        Work Location (สถานที่ปฏิบัติงาน) <span className="text-rose-500 font-bold">*</span>
                       </label>
                       <select
-                        required
                         value={formInput.workLocation || "Dusit Central Park"}
                         onChange={(e) => setFormInput({ ...formInput, workLocation: e.target.value })}
                         className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
@@ -6984,12 +6988,11 @@
                     {formInput.positionType === "Replacement" && (
                       <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 animate-fadeIn">
                         <label className="block text-[11px] font-bold text-amber-900 dark:text-amber-200 mb-1">
-                          Replaced Employee Name (ชื่อพนักงานเดิมที่ถูกทดแทน) <span className="text-rose-600 font-bold">* (จำเป็นต้องระบุ)</span>
+                          Replaced Employee Name (ชื่อพนักงานเดิมที่ถูกทดแทน) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <input
                           type="text"
-                          required
-                          placeholder="ระบุชื่อ-นามสกุล ของพนักงานที่ลาออก หรือตำแหน่งเดิมที่ถูกทดแทน"
+                          placeholder="ระบุชื่อพนักงานที่ลาออก"
                           value={formInput.replacedEmployeeName}
                           onChange={(e) => setFormInput({ ...formInput, replacedEmployeeName: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 font-semibold focus:ring-2 focus:ring-amber-500"
@@ -7000,10 +7003,9 @@
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-slate-200/60 dark:border-slate-700/60">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Gender (เพศ) <span className="text-rose-600 font-bold">*</span>
+                          Gender (เพศ) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.gender}
                           onChange={(e) => setFormInput({ ...formInput, gender: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
@@ -7016,10 +7018,9 @@
 
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Age Range (ช่วงอายุ) <span className="text-rose-600 font-bold">*</span>
+                          Age Range (ช่วงอายุ) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.age}
                           onChange={(e) => setFormInput({ ...formInput, age: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
@@ -7035,10 +7036,9 @@
 
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Education Level (ระดับการศึกษา) <span className="text-rose-600 font-bold">*</span>
+                          Education Level (ระดับการศึกษา) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.educationLevel}
                           onChange={(e) => setFormInput({ ...formInput, educationLevel: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
@@ -7055,12 +7055,11 @@
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Major / Field of Study (สาขาวิชา) <span className="text-rose-600 font-bold">*</span>
+                          Major / Field of Study (สาขาวิชา)
                         </label>
                         <input
                           type="text"
-                          required
-                          placeholder="e.g. Computer Science, Accounting, Marketing..."
+                          placeholder="e.g. Computer Science หรือ -"
                           value={formInput.major}
                           onChange={(e) => setFormInput({ ...formInput, major: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
@@ -7069,10 +7068,9 @@
 
                       <div>
                         <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                          Work Experience (ประสบการณ์ทำงาน) <span className="text-rose-600 font-bold">*</span>
+                          Work Experience (ประสบการณ์ทำงาน) <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.experience}
                           onChange={(e) => setFormInput({ ...formInput, experience: e.target.value })}
                           className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-semibold"
@@ -7087,12 +7085,11 @@
 
                     <div>
                       <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                        Must-Have Qualifications (คุณสมบัติจำเป็น) <span className="text-rose-600 font-bold">*</span>
+                        Must-Have Qualifications (คุณสมบัติจำเป็น)
                       </label>
                       <textarea
-                        required
                         rows="2"
-                        placeholder="ระบุทักษะความเชี่ยวชาญสำคัญ ความรู้เฉพาะทาง หรือใบอนุญาตที่ต้องมี..."
+                        placeholder="ระบุทักษะ หรือระบุ - หากไม่มีข้อกำหนดเฉพาะ..."
                         value={formInput.mustHaveQualifications}
                         onChange={(e) => setFormInput({ ...formInput, mustHaveQualifications: e.target.value })}
                         className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-medium"
@@ -7101,12 +7098,11 @@
 
                     <div>
                       <label className="block text-[11px] font-bold mb-1 text-slate-700 dark:text-slate-300">
-                        Job Description (ลักษณะงานโดยย่อ) <span className="text-rose-600 font-bold">*</span>
+                        Job Description (ลักษณะงานโดยย่อ)
                       </label>
                       <textarea
-                        required
                         rows="2"
-                        placeholder="สรุปขอบเขตงานและหน้าที่ความรับผิดชอบหลัก..."
+                        placeholder="สรุปขอบเขตงาน หรือระบุ - ..."
                         value={formInput.jobDescription}
                         onChange={(e) => setFormInput({ ...formInput, jobDescription: e.target.value })}
                         className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-medium"
@@ -7121,23 +7117,17 @@
                         <span className="w-5 h-5 rounded-full bg-purple-600 text-white text-[10px] font-bold flex items-center justify-center">4</span>
                         <span>IT &amp; Equipment Requisition (4. อุปกรณ์และสิทธิ์ IT)</span>
                       </h4>
-                      <span className="text-[10px] text-purple-700 dark:text-purple-300 font-semibold">
-                        เลือกความต้องการทุกหัวข้อ *
-                      </span>
                     </div>
 
                     <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                       <div className="p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-purple-200 dark:border-purple-800">
                         <label className="block text-[10px] font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Laptop / PC <span className="text-rose-600 font-bold">*</span>
+                          Laptop / PC <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.itLaptop}
                           onChange={(e) => setFormInput({ ...formInput, itLaptop: e.target.value })}
-                          className={`w-full p-1.5 rounded-lg border text-xs font-bold ${
-                            formInput.itLaptop === "ต้องการ" ? "bg-brand-50 border-brand-300 text-brand-700 dark:bg-brand-950/70 dark:text-brand-300" : "bg-slate-50 border-slate-200 text-slate-500"
-                          }`}
+                          className="w-full p-1.5 rounded-lg border text-xs font-bold bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
                         >
                           <option value="ต้องการ">Required (ต้องการ)</option>
                           <option value="ไม่ต้องการ">Not Required (ไม่ต้องการ)</option>
@@ -7146,15 +7136,12 @@
 
                       <div className="p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-purple-200 dark:border-purple-800">
                         <label className="block text-[10px] font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Sim / Phone <span className="text-rose-600 font-bold">*</span>
+                          Sim / Phone <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.itSimCard}
                           onChange={(e) => setFormInput({ ...formInput, itSimCard: e.target.value })}
-                          className={`w-full p-1.5 rounded-lg border text-xs font-bold ${
-                            formInput.itSimCard === "ต้องการ" ? "bg-brand-50 border-brand-300 text-brand-700 dark:bg-brand-950/70 dark:text-brand-300" : "bg-slate-50 border-slate-200 text-slate-500"
-                          }`}
+                          className="w-full p-1.5 rounded-lg border text-xs font-bold bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
                         >
                           <option value="ไม่ต้องการ">Not Required (ไม่ต้องการ)</option>
                           <option value="ต้องการ">Required (ต้องการ)</option>
@@ -7163,15 +7150,12 @@
 
                       <div className="p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-purple-200 dark:border-purple-800">
                         <label className="block text-[10px] font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          Corporate Email <span className="text-rose-600 font-bold">*</span>
+                          Corporate Email <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.itEmail}
                           onChange={(e) => setFormInput({ ...formInput, itEmail: e.target.value })}
-                          className={`w-full p-1.5 rounded-lg border text-xs font-bold ${
-                            formInput.itEmail === "ต้องการ" ? "bg-brand-50 border-brand-300 text-brand-700 dark:bg-brand-950/70 dark:text-brand-300" : "bg-slate-50 border-slate-200 text-slate-500"
-                          }`}
+                          className="w-full p-1.5 rounded-lg border text-xs font-bold bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
                         >
                           <option value="ต้องการ">Required (ต้องการ)</option>
                           <option value="ไม่ต้องการ">Not Required (ไม่ต้องการ)</option>
@@ -7180,15 +7164,12 @@
 
                       <div className="p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-purple-200 dark:border-purple-800">
                         <label className="block text-[10px] font-bold text-slate-700 dark:text-slate-300 mb-1">
-                          ERP Netsuite <span className="text-rose-600 font-bold">*</span>
+                          ERP Netsuite <span className="text-rose-500 font-bold">*</span>
                         </label>
                         <select
-                          required
                           value={formInput.itNetsuite}
                           onChange={(e) => setFormInput({ ...formInput, itNetsuite: e.target.value })}
-                          className={`w-full p-1.5 rounded-lg border text-xs font-bold ${
-                            formInput.itNetsuite === "ต้องการ" ? "bg-brand-50 border-brand-300 text-brand-700 dark:bg-brand-950/70 dark:text-brand-300" : "bg-slate-50 border-slate-200 text-slate-500"
-                          }`}
+                          className="w-full p-1.5 rounded-lg border text-xs font-bold bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200"
                         >
                           <option value="ไม่ต้องการ">Not Required (ไม่ต้องการ)</option>
                           <option value="ต้องการ">Required (ต้องการ)</option>
