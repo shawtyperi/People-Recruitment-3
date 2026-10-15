@@ -182,7 +182,42 @@
     const GOOGLE_SHEET_CANDIDATES_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=546067727";
     const GOOGLE_SHEET_MANPOWER_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1528284561";
     const CANDIDATES_SHEET_EDIT_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=546067727#gid=546067727";
-    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzzj2BQteWS7pQCfKqOSj5vxNB76YKF-mIUEcHeo6eYUDjYZwAR2xuWzsTtm9hQENK3SA/exec";
+    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbywyfHu_MoMp3byNb4B4jrFXvzjYsNcn-16BA1thWd6luA1gls2g6qIJ7JgQ2Fiv7JRcA/exec";
+    const SCRIPT_URL_STORAGE_KEY = "hr_central_script_url_prod_v1";
+
+    // ฟังก์ชันช่วยดึงข้อมูลผ่าน JSONP (ป้องกันการติดปัญหา CORS ในทุกสภาพแวดล้อม)
+    const fetchJsonpFallback = (url, timeoutMs = 8000) => {
+      return new Promise((resolve, reject) => {
+        const callbackName = 'gas_cb_' + Math.random().toString(36).substring(2);
+        const script = document.createElement('script');
+        let timer = null;
+
+        window[callbackName] = (data) => {
+          clearTimeout(timer);
+          cleanup();
+          resolve(data);
+        };
+
+        const cleanup = () => {
+          delete window[callbackName];
+          if (script.parentNode) script.parentNode.removeChild(script);
+        };
+
+        timer = setTimeout(() => {
+          cleanup();
+          reject(new Error('JSONP Timeout'));
+        }, timeoutMs);
+
+        script.onerror = () => {
+          cleanup();
+          reject(new Error('JSONP Script Load Error'));
+        };
+
+        const separator = url.includes('?') ? '&' : '?';
+        script.src = `${url}${separator}callback=${callbackName}&_t=${Date.now()}`;
+        document.body.appendChild(script);
+      });
+    };
 
     const cleanCandidateName = (fullName) => {
       if (!fullName) return "";
@@ -726,10 +761,40 @@
       });
 
       const [googleScriptUrl, setGoogleScriptUrl] = useState(() => {
-        const targetUrl = DEFAULT_APPS_SCRIPT_WEBAPP_URL;
-        localStorage.setItem("hr_apps_script_url_v64", targetUrl);
-        return targetUrl;
+        try {
+          const saved = localStorage.getItem(SCRIPT_URL_STORAGE_KEY);
+          if (saved && saved.trim().startsWith("http")) {
+            return saved.trim();
+          }
+        } catch (e) {}
+        return DEFAULT_APPS_SCRIPT_WEBAPP_URL;
       });
+
+      const handleSaveCustomScriptUrl = (newUrl) => {
+        const trimmed = (newUrl || "").trim();
+        if (!trimmed || !trimmed.startsWith("http")) {
+          triggerToast("⚠️ กรุณาระบุ Web App URL ให้ถูกต้อง (ขึ้นต้นด้วย https://)");
+          return false;
+        }
+        try {
+          localStorage.setItem(SCRIPT_URL_STORAGE_KEY, trimmed);
+        } catch (e) {}
+        setGoogleScriptUrl(trimmed);
+        setScriptUrlInput(trimmed);
+        triggerToast("✅ บันทึกและเชื่อมต่อ Google Apps Script URL ใหม่เรียบร้อยแล้ว!");
+        setTimeout(() => syncWorkflowStatus(false), 200);
+        return true;
+      };
+
+      const handleResetDefaultScriptUrl = () => {
+        try {
+          localStorage.setItem(SCRIPT_URL_STORAGE_KEY, DEFAULT_APPS_SCRIPT_WEBAPP_URL);
+        } catch (e) {}
+        setGoogleScriptUrl(DEFAULT_APPS_SCRIPT_WEBAPP_URL);
+        setScriptUrlInput(DEFAULT_APPS_SCRIPT_WEBAPP_URL);
+        triggerToast("🔄 รีเซ็ต Script URL กลับเป็นค่ามาตรฐานเริ่มต้นเรียบร้อยแล้ว");
+        setTimeout(() => syncWorkflowStatus(false), 200);
+      };
 
       // Real-time Central Sync Health Monitor State
       const [syncHealth, setSyncHealth] = useState({
@@ -1392,11 +1457,19 @@
         if (!googleScriptUrl) return;
 
         try {
-          const res = await fetch(`${googleScriptUrl}?action=getWorkflowStatuses&_t=${Date.now()}`, {
-            cache: "no-store",
-            headers: { "Pragma": "no-cache", "Cache-Control": "no-cache" }
-          });
-          const resJson = await res.json();
+          let resJson = null;
+
+          // 1. ลองดึงข้อมูลด้วย fetch ปกติก่อน (ไม่ส่ง Custom Header เพื่อไม่ให้เกิด Preflight OPTIONS error)
+          try {
+            const fetchUrl = `${googleScriptUrl}?action=getWorkflowStatuses&_t=${Date.now()}`;
+            const res = await fetch(fetchUrl);
+            if (res.ok) {
+              resJson = await res.json();
+            }
+          } catch (fetchErr) {
+            // 2. หาก fetch ติดปัญหา CORS หรือ Network ให้สลับไปใช้ JSONP อัตโนมัติทันที
+            resJson = await fetchJsonpFallback(googleScriptUrl);
+          }
 
           if (resJson && resJson.status === "success") {
             const serverStatuses = resJson.data || resJson.slotStages || {};
@@ -3593,6 +3666,21 @@
                     </button>
                   )}
 
+                  {/* Admin Direct Script URL Settings Button in Header */}
+                  {isAdminAuthenticated && (
+                    <button
+                      onClick={() => {
+                        setScriptUrlInput(googleScriptUrl);
+                        setShowSheetsModal(true);
+                      }}
+                      className="p-2.5 rounded-xl text-brand-600 dark:text-brand-400 bg-brand-50 hover:bg-brand-100 dark:bg-brand-950/60 dark:hover:bg-brand-900 border border-brand-200 dark:border-brand-800 transition flex items-center gap-1.5 text-xs font-bold"
+                      title="ตั้งค่า Google Apps Script Web App URL (เฉพาะแอดมิน)"
+                    >
+                      <span>⚙️</span>
+                      <span className="hidden lg:inline">Script Settings</span>
+                    </button>
+                  )}
+
                   <button
                     onClick={handleCopyShareLink}
                     className="p-2.5 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-800 transition"
@@ -3986,6 +4074,20 @@
                             >
                               <Icon name="refresh" className="w-3.5 h-3.5 text-brand-600" />
                               <span>Restore Hidden ({allPositionSlots.filter(s => s.isArchivedFromKanban).length})</span>
+                            </button>
+                          )}
+
+                          {/* Admin Quick Script Setting Button on Kanban Toolbar */}
+                          {isAdminAuthenticated && (
+                            <button
+                              onClick={() => {
+                                setScriptUrlInput(googleScriptUrl);
+                                setShowSheetsModal(true);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-semibold flex items-center gap-1 transition shadow-2xs"
+                              title="แก้ไข Google Apps Script Web App URL"
+                            >
+                              <span>⚙️ แก้ไข Script URL</span>
                             </button>
                           )}
 
@@ -6821,9 +6923,18 @@
                       onChange={(e) => setScriptUrlInput(e.target.value)}
                       className="w-full p-2.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-brand-500 font-mono"
                     />
-                    <p className="text-[10px] text-slate-400 mt-1">
-                      วาง URL ของ Web App ที่ได้จากการ Deploy Google Apps Script (เข้าถึงโดย Anyone) เพื่อให้ระบบส่งข้อมูลไปลง Sheet ทันที
-                    </p>
+                    <div className="flex items-center justify-between mt-1.5">
+                      <p className="text-[10px] text-slate-400">
+                        วาง Web App URL ที่ได้จากการ Deploy Google Apps Script (เข้าถึงโดย Anyone)
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleResetDefaultScriptUrl}
+                        className="text-[10px] font-bold text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 underline"
+                      >
+                        รีเซ็ตเป็นค่าเริ่มต้น
+                      </button>
+                    </div>
                   </div>
 
                   <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
@@ -6899,15 +7010,13 @@
                   <button
                     type="button"
                     onClick={() => {
-                      const trimmed = scriptUrlInput.trim();
-                      setGoogleScriptUrl(trimmed);
-                      localStorage.setItem("hr_apps_script_url_v62", trimmed);
-                      setShowSheetsModal(false);
-                      triggerToast("บันทึกการตั้งค่า Web App Sync URL สำเร็จ!");
+                      if (handleSaveCustomScriptUrl(scriptUrlInput)) {
+                        setShowSheetsModal(false);
+                      }
                     }}
-                    className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-md"
+                    className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 shadow-md active:scale-95 transition"
                   >
-                    บันทึกการตั้งค่า
+                    บันทึกการตั้งค่า Script URL
                   </button>
                 </div>
               </div>
@@ -9044,14 +9153,28 @@
 
                   <div>
                     <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
-                      Web App URL ที่ใช้อยู่ปัจจุบัน:
+                      Web App URL ที่ใช้อยู่ปัจจุบัน (แอดมินแก้ไขได้ที่นี่):
                     </label>
-                    <input
-                      type="text"
-                      readOnly
-                      value={googleScriptUrl}
-                      className="w-full p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-[11px] text-slate-600 dark:text-slate-300"
-                    />
+                    <div className="flex gap-2">
+                      <input
+                        type="url"
+                        placeholder="https://script.google.com/macros/s/.../exec"
+                        value={scriptUrlInput}
+                        onChange={(e) => setScriptUrlInput(e.target.value)}
+                        className="w-full p-2.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 font-mono text-[11px] text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-sky-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (handleSaveCustomScriptUrl(scriptUrlInput)) {
+                            setShowSyncDiagModal(false);
+                          }
+                        }}
+                        className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shrink-0 shadow-sm"
+                      >
+                        บันทึก URL
+                      </button>
+                    </div>
                   </div>
                 </div>
 
