@@ -182,7 +182,7 @@
     const GOOGLE_SHEET_CANDIDATES_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=546067727";
     const GOOGLE_SHEET_MANPOWER_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1528284561";
     const CANDIDATES_SHEET_EDIT_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=546067727#gid=546067727";
-    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwo4A32TWoyjd_sG8GlPlz4JiDxZQza2j5RkmsR4dSRTJFIJtcoDAtXSU4Tb1r132xnTw/exec";
+    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyaK-2g8n7JWrZWaLJa0OP3LoMcbTeqe-U5IHO6g7qc_Riq7SNAmrDXkZFXvIGyAaPp5Q/exec";
 
     const cleanCandidateName = (fullName) => {
       if (!fullName) return "";
@@ -811,14 +811,37 @@
           const resJson = await res.json();
 
           if (resJson && resJson.status === "success") {
-            const serverStatuses = resJson.data || {};
+            const serverStatuses = resJson.data || resJson.slotStages || {};
             const itConfirmedSlots = resJson.itConfirmedSlots || {};
             const slotStages = resJson.slotStages || {};
             const evalsMap = resJson.evaluations || {};
+            const deletedMap = resJson.deletedSlots || {};
             const remoteRequisitions = resJson.requisitions || [];
+            const remoteCandidates = resJson.candidates || [];
 
+            // 1. อัปเดต Candidate Pool ให้ทุกหน้าต่างตรงกันแบบ Real-time
+            if (remoteCandidates.length > 0) {
+              setCandidatePool(prevPool => {
+                const updatedPool = remoteCandidates.map(c => {
+                  // ตรวจสอบว่าแคนดิเดตคนนี้ถูกแมปเข้ากับ Slot ใดใน slotStages หรือไม่
+                  let assignedSlot = "";
+                  for (const [sId, sData] of Object.entries(slotStages)) {
+                    if (sData && sData.candidateName && isSameCandidate(sData.candidateName, c.fullName)) {
+                      assignedSlot = sId;
+                      break;
+                    }
+                  }
+                  return {
+                    ...c,
+                    assignedSlotId: assignedSlot || c.assignedSlotId || ""
+                  };
+                });
+                return updatedPool;
+              });
+            }
+
+            // 2. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot เพื่อให้ User ทุกคนเห็นตรงกันเสมอ
             setRequests(prevRequests => {
-              // 1. รวมคำขอจากระบบกลาง Google Sheet
               let baseList = [...prevRequests];
               if (remoteRequisitions.length > 0) {
                 const existingMap = new Map();
@@ -828,7 +851,6 @@
                   const existing = existingMap.get(remReq.id);
                   const headcount = Math.max(1, Number(remReq.headcountRequired) || 1);
                   
-                  // สร้างหรือดึง slots เดิม
                   let slots = existing?.slots && existing.slots.length > 0 
                     ? [...existing.slots] 
                     : Array.from({ length: headcount }, (_, i) => ({
@@ -852,7 +874,6 @@
                 });
               }
 
-              // 2. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot เพื่อให้ User ทุกคนเห็นตรงกันเสมอ
               return baseList.map(r => {
                 const mainId = r.id;
                 const cleanId = String(mainId).replace(/-\d+$/, "");
@@ -863,12 +884,15 @@
                   const itAckFromRemote = Boolean(itConfirmedSlots[s.slotId] || itConfirmedSlots[mainId]);
                   const remoteEvals = evalsMap[s.slotId] || [];
 
-                  if (stageOverride?.isDeleted) {
-                    return null; // ลบออกตามคำสั่งของแอดมินกลาง
+                  // ตรวจสอบการลบถาวร
+                  if (stageOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
+                    return null;
                   }
 
                   const newWfStatus = remoteWfItem?.status || stageOverride?.slotStatus || s.workflowStatus;
                   const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(stageOverride?.itEquipmentConfirmed);
+                  
+                  // สเตจจริงจากเซิร์ฟเวอร์กลาง: หาก Admin ย้ายไป interview หน้าต่าง User อื่นจะเปลี่ยนเป็น interview ทันที
                   const effectiveStage = stageOverride?.stage || (newWfStatus === "READY_FOR_RECRUITMENT" && s.stage === "received" ? "manpower" : s.stage);
 
                   return {
