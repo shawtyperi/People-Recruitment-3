@@ -1145,13 +1145,21 @@
       };
 
       const handleDragStart = (e, slotId) => {
-        draggedSlotIdRef.current = slotId;
+        const cleanSlotId = String(slotId).trim();
+        window.__activeDraggedSlotId = cleanSlotId;
+        draggedSlotIdRef.current = cleanSlotId;
         isDraggingRef.current = true;
-        setDraggedSlotId(slotId);
+
         try {
-          e.dataTransfer.setData("text/plain", slotId);
           e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", cleanSlotId);
+          e.dataTransfer.setData("application/x-slot-id", cleanSlotId);
         } catch (err) {}
+
+        // หน่วงเวลาเล็กน้อยเพื่อให้เบราว์เซอร์จับภาพ Drag Snapshot ได้สมบูรณ์ก่อน ไม่เกิดการ Abort
+        setTimeout(() => {
+          setDraggedSlotId(cleanSlotId);
+        }, 10);
       };
 
       const handleDragOver = (e, stageId) => {
@@ -1165,13 +1173,20 @@
         }
       };
 
+      const handleDragEnter = (e, stageId) => {
+        e.preventDefault();
+        try {
+          e.dataTransfer.dropEffect = "move";
+        } catch (err) {}
+        if (dragOverStageRef.current !== stageId) {
+          dragOverStageRef.current = stageId;
+          setDragOverStage(stageId);
+        }
+      };
+
       const handleDragLeave = (e, stageId) => {
-        if (!e.currentTarget) return;
-        const rect = e.currentTarget.getBoundingClientRect();
-        const x = e.clientX;
-        const y = e.clientY;
-        // ตรวจสอบพิกัดเมาส์จริงว่าหลุดออกจากพื้นที่ของคอลัมน์หรือไม่ เพื่อป้องกันการกระพริบตอนเลื่อนผ่านการ์ด
-        if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) {
+        // ตรวจสอบว่าเมาส์หลุดออกจากพื้นที่ของคอลัมน์จริง ๆ ไม่ใช่แค่ขยับไปโดน Element ย่อย
+        if (e.currentTarget && !e.currentTarget.contains(e.relatedTarget)) {
           if (dragOverStageRef.current === stageId) {
             dragOverStageRef.current = null;
             setDragOverStage(null);
@@ -1182,35 +1197,41 @@
       const handleDrop = (e, targetStage) => {
         e.preventDefault();
         e.stopPropagation();
-        let slotId = draggedSlotIdRef.current || draggedSlotId;
+
+        let slotId = window.__activeDraggedSlotId || 
+                     draggedSlotIdRef.current || 
+                     draggedSlotId;
+
         if (!slotId && e.dataTransfer) {
           try {
-            slotId = e.dataTransfer.getData("text/plain");
+            slotId = e.dataTransfer.getData("application/x-slot-id") || e.dataTransfer.getData("text/plain");
           } catch (err) {}
         }
-        
+
+        window.__activeDraggedSlotId = null;
+        draggedSlotIdRef.current = null;
         dragOverStageRef.current = null;
         setDragOverStage(null);
         setDraggedSlotId(null);
-        draggedSlotIdRef.current = null;
 
-        // หน่วงเวลาเล็กน้อยก่อนปลด isDragging เพื่อไม่ให้การคลิกหลังปล่อยเมาส์เปิด Detail Modal ขึ้นมา
+        // ป้องกันไม่ให้การคลิกหลังปล่อยเมาส์เปิด Modal รายละเอียดขึ้นมา
         setTimeout(() => {
           isDraggingRef.current = false;
-        }, 180);
+        }, 220);
 
         if (!slotId) return;
-        handleInitiateStageChange(slotId, targetStage);
+        handleInitiateStageChange(String(slotId).trim(), targetStage);
       };
 
       const handleDragEnd = () => {
+        window.__activeDraggedSlotId = null;
         dragOverStageRef.current = null;
+        draggedSlotIdRef.current = null;
         setDragOverStage(null);
         setDraggedSlotId(null);
-        draggedSlotIdRef.current = null;
         setTimeout(() => {
           isDraggingRef.current = false;
-        }, 180);
+        }, 220);
       };
 
       const syncCandidatesFromGoogleSheet = async (showToast = false) => {
@@ -3223,22 +3244,23 @@
 
       // Direct Stage Update
       const updateSlotStageDirectly = (targetSlotId, targetStage) => {
+        const cleanSlotId = String(targetSlotId).trim();
         const todayStr = new Date().toISOString().split('T')[0];
 
         // บันทึกสเตจใหม่ใน Local Ref ทันทีเพื่อป้องกันไม่ให้ Polling ทุก 3 วินาทีนำสเตจเก่ามาทับ
-        recentLocalStageUpdates.current.set(targetSlotId, { stage: targetStage, timestamp: Date.now() });
+        recentLocalStageUpdates.current.set(cleanSlotId, { stage: targetStage, timestamp: Date.now() });
 
         setRequests(prev => prev.map(r => {
-          // ตรวจสอบว่าคำขอนี้มี Slot เป้าหมายหรือไม่
-          const hasTargetSlot = r.slots?.some(s => s.slotId === targetSlotId) || r.id === targetSlotId;
+          const parentReqId = String(cleanSlotId).replace(/-\d+$/, "");
+          const hasTargetSlot = r.id === parentReqId || r.id === cleanSlotId || (r.slots && r.slots.some(s => s.slotId === cleanSlotId));
           if (!hasTargetSlot) return r;
 
-          // รักษา Slot เดิมไว้เสมอ ไม่สร้างทับหรือลบรายการเดิมทิ้ง
+          const headcount = Math.max(1, Number(r.headcountRequired) || (r.slots?.length || 1));
           const baseSlots = (r.slots && r.slots.length > 0)
             ? r.slots
-            : [{
-                slotId: `${r.id}-1`,
-                slotIndex: 1,
+            : Array.from({ length: headcount }, (_, i) => ({
+                slotId: `${r.id}-${i + 1}`,
+                slotIndex: i + 1,
                 slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
                 candidateName: r.candidateName || "",
                 candidatePhone: r.candidatePhone || "",
@@ -3254,11 +3276,11 @@
                 onboardingArrivalStatus: "pending_arrival",
                 rejectionReason: "",
                 evaluations: []
-              }];
+              }));
 
           let slotUpdated = false;
           const slots = baseSlots.map(s => {
-            if (s.slotId === targetSlotId || (baseSlots.length === 1 && s.slotId.startsWith(r.id))) {
+            if (s.slotId === cleanSlotId || (baseSlots.length === 1 && (s.slotId.startsWith(r.id) || r.id === parentReqId))) {
               slotUpdated = true;
               const isNowOffer = targetStage === "offer";
               const isNowCancelled = targetStage === "cancelled";
@@ -3289,20 +3311,22 @@
         }));
 
         // อัปเดต selectedDetailSlot ทันทีหากกำลังเปิดดูอยู่
-        setSelectedDetailSlot(prev => prev && prev.slotId === targetSlotId ? { ...prev, stage: targetStage } : prev);
+        setSelectedDetailSlot(prev => prev && prev.slotId === cleanSlotId ? { ...prev, stage: targetStage } : prev);
 
         // 🔄 ส่งขั้นตอนใหม่ไปยังศูนย์กลาง Apps Script ทันที
-        sendCentralSlotStageUpdate(targetSlotId, {
+        sendCentralSlotStageUpdate(cleanSlotId, {
           stage: targetStage,
           offerSentDate: targetStage === "offer" ? todayStr : undefined
         });
 
-        triggerToast(`✅ ย้ายตำแหน่ง #${targetSlotId} ไปสู่ "${targetStage}" สำเร็จ!`);
+        const stageLabel = STAGES.find(st => st.id === targetStage)?.label || targetStage;
+        triggerToast(`✅ ย้ายตำแหน่ง #${cleanSlotId} ไปสู่ "${stageLabel}" สำเร็จ!`);
       };
 
       // Stage Transition Gatekeeper (Trigger Modals for Interview / Onboarded / Cancelled)
       const handleInitiateStageChange = (slotId, targetStage) => {
-        const slotItem = allPositionSlots.find(s => s.slotId === slotId);
+        const cleanSlotId = String(slotId).trim();
+        const slotItem = allPositionSlots.find(s => s.slotId === cleanSlotId);
         if (!slotItem) return;
 
         // หากลากปล่อยในสเตจเดิม ไม่จำเป็นต้องดำเนินการซ้ำ
@@ -3316,20 +3340,20 @@
 
         // ถ้าย้ายเข้าด่าน Onboarded ให้เปิดหน้าต่างระบุวันเริ่มงาน
         if (targetStage === "onboarded") {
-          setOnboardModalData({ slotId, slotItem });
+          setOnboardModalData({ slotId: cleanSlotId, slotItem });
           setOnboardHireDateInput(slotItem.hireDate || new Date().toISOString().split('T')[0]);
           return;
         }
 
         // ถ้าย้ายเข้าด่าน Cancelled ให้เปิดหน้าต่างระบุเหตุผลการสละสิทธิ์
         if (targetStage === "cancelled") {
-          setRejectionModalData({ slotId, slotItem, isArrivalDecline: false });
+          setRejectionModalData({ slotId: cleanSlotId, slotItem, isArrivalDecline: false });
           setRejectionReasonInput(slotItem.rejectionReason || "");
           return;
         }
 
         // สเตจทั่วไป (เช่น manpower, interview, offer) ให้ย้ายขั้นตอนทันที
-        updateSlotStageDirectly(slotId, targetStage);
+        updateSlotStageDirectly(cleanSlotId, targetStage);
       };
 
       const handleFormSubmit = (e) => {
@@ -4239,7 +4263,7 @@
                               }}
                               onDragEnter={(e) => {
                                 if (!isAdminAuthenticated) return;
-                                handleDragOver(e, stage.id);
+                                handleDragEnter(e, stage.id);
                               }}
                               onDragLeave={(e) => {
                                 if (!isAdminAuthenticated) return;
@@ -4252,8 +4276,6 @@
                               className={`w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 transition-colors duration-150 ${
                                 dragOverStage === stage.id
                                   ? 'border-brand-500 bg-brand-50/70 dark:bg-brand-950/50 ring-2 ring-brand-500/20'
-                                  : draggedSlotId
-                                  ? 'border-dashed border-slate-300 dark:border-slate-700 bg-slate-50/60 dark:bg-slate-800/30'
                                   : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40'
                               }`}
                             >
@@ -4292,7 +4314,17 @@
                                 className="space-y-2.5 flex-1 overflow-y-auto max-h-[560px] pr-0.5 min-h-[140px] flex flex-col"
                               >
                                 {stageItems.length === 0 && (
-                                  <div className="h-32 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 text-[11px] p-3 text-center pointer-events-none select-none my-auto">
+                                  <div 
+                                    onDragOver={(e) => {
+                                      if (!isAdminAuthenticated) return;
+                                      handleDragOver(e, stage.id);
+                                    }}
+                                    onDrop={(e) => {
+                                      if (!isAdminAuthenticated) return;
+                                      handleDrop(e, stage.id);
+                                    }}
+                                    className="h-32 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 text-[11px] p-3 text-center select-none my-auto cursor-pointer"
+                                  >
                                     <span>วางการ์ดที่นี่เพื่อย้ายขั้นตอน</span>
                                     <span className="text-[10px] text-slate-400/80 mt-0.5">(Drop card here)</span>
                                   </div>
@@ -4324,11 +4356,11 @@
                                         if (isDraggingRef.current) return;
                                         setSelectedDetailSlot(item);
                                       }}
-                                      className={`p-3.5 rounded-2xl border transition-all duration-150 select-none group hover:shadow-sm ${
+                                      className={`p-3.5 rounded-2xl border transition-colors duration-150 select-none group hover:shadow-sm ${
                                         isAdminAuthenticated ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
                                       } ${
                                         isBeingDragged
-                                          ? 'opacity-40 scale-98 border-sky-400 bg-sky-50/50'
+                                          ? 'opacity-40 border-sky-400 bg-sky-50/50 dark:bg-sky-950/30'
                                           : item.stage === 'cancelled'
                                           ? 'border-slate-200 dark:border-slate-800 bg-rose-50/20 dark:bg-rose-950/10'
                                           : isArrived
