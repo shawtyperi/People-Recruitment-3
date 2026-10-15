@@ -1152,6 +1152,12 @@
       // 🚀 ระบบ Drag & Drop ประสิทธิภาพสูง: ใช้ Pure DOM Styling โดยไม่สั่ง React setState ระหว่างลาก
       // ช่วยป้องกัน Chrome / Edge ไม่ให้ยกเลิกการลาก (Abort Drag) กลางคัน ทำให้ลากปล่อยติด 100%
       const handleDragStart = (e, slotId) => {
+        // 🔒 เฉพาะ Admin เท่านั้นที่สามารถลากการ์ดย้ายขั้นตอนได้
+        if (!isAdminAuthenticated) {
+          e.preventDefault();
+          return false;
+        }
+
         const cleanSlotId = String(slotId).trim();
         window.__activeDraggedSlotId = cleanSlotId;
         draggedSlotIdRef.current = cleanSlotId;
@@ -1172,6 +1178,7 @@
       };
 
       const handleDragOver = (e, stageId) => {
+        if (!isAdminAuthenticated) return;
         e.preventDefault();
         try {
           e.dataTransfer.dropEffect = "move";
@@ -1188,6 +1195,7 @@
       };
 
       const handleDragEnter = (e, stageId) => {
+        if (!isAdminAuthenticated) return;
         e.preventDefault();
         try {
           e.dataTransfer.dropEffect = "move";
@@ -1195,6 +1203,7 @@
       };
 
       const handleDragLeave = (e, stageId) => {
+        if (!isAdminAuthenticated) return;
         const col = e.currentTarget.closest('[data-stage-column]');
         if (col && (!e.relatedTarget || !col.contains(e.relatedTarget))) {
           col.classList.remove("border-brand-500", "bg-brand-50/70", "dark:bg-brand-950/50", "ring-2", "ring-brand-500/20");
@@ -1207,6 +1216,9 @@
       const handleDrop = (e, targetStage) => {
         e.preventDefault();
         e.stopPropagation();
+
+        // 🔒 ป้องกันผู้ใช้ทั่วไปจากการ Drop ย้ายการ์ด
+        if (!isAdminAuthenticated) return;
 
         // ล้างสไตล์ของคอลัมน์และตัวการ์ดที่ถูกลาก
         if (window.__lastOverCol) {
@@ -1848,31 +1860,37 @@
       const allPositionSlots = useMemo(() => {
         return requests.flatMap(r => {
           const headcount = Math.max(1, Number(r.headcountRequired) || (r.slots?.length || 1));
-          const slots = (r.slots && r.slots.length > 0) 
-            ? r.slots 
-            : Array.from({ length: headcount }, (_, i) => ({
-                slotId: `${r.id}-${i + 1}`,
-                slotIndex: i + 1,
-                slotStatus: r.requestStatus || "Recruiting",
+          
+          // ตรวจสอบและสร้าง Slot ให้ครบทุกอัตราแบบ 1:1 เสมอ (ป้องกันการรวมกลุ่มหรือขาด Slot)
+          let currentSlots = (r.slots && r.slots.length > 0) ? [...r.slots] : [];
+          if (currentSlots.length < headcount) {
+            for (let i = currentSlots.length + 1; i <= headcount; i++) {
+              currentSlots.push({
+                slotId: `${r.id}-${i}`,
+                slotIndex: i,
+                slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
+                workflowStatus: r.workflowStatus || "READY_FOR_RECRUITMENT",
                 candidateName: "",
                 candidatePhone: "",
                 candidateNickname: "",
                 resumeUrl: "",
-                stage: r.stage || "received",
+                stage: "received",
                 offerSentDate: "",
                 hireDate: "",
                 interviewSchedule: "",
                 interviewScore: 0,
                 interviewScorePercent: 0,
                 interviewResult: "",
-                onboardingArrivalStatus: r.onboardingArrivalStatus || "pending_arrival",
-                rejectionReason: r.rejectionReason || "",
+                onboardingArrivalStatus: "pending_arrival",
+                rejectionReason: "",
                 evaluations: []
-              }));
+              });
+            }
+          }
 
-          const actualTotalSlots = Math.max(slots.length, headcount);
+          const actualTotalSlots = Math.max(currentSlots.length, headcount);
 
-          return slots.map((slot, sIdx) => {
+          return currentSlots.map((slot, sIdx) => {
             const actualSlotIndex = slot.slotIndex || (sIdx + 1);
             const matchedCand = candidatePool.find(c => 
               (c.assignedSlotId && c.assignedSlotId === slot.slotId) || 
@@ -1883,15 +1901,16 @@
             const currentEvals = slot.evaluations || [];
             const evalStats = calculateOverallScore(currentEvals);
 
-            const isCancelled = (slot.stage || r.stage) === "cancelled";
+            // แยกสถานะการยกเลิกเป็นราย Slot อย่างเด็ดขาด (ไม่เอา r.stage รวมมาปน)
+            const isCancelled = slot.stage === "cancelled";
             const arrivalStatus = isCancelled
               ? "declined_noshow"
-              : (slot.onboardingArrivalStatus || r.onboardingArrivalStatus || "pending_arrival");
+              : (slot.onboardingArrivalStatus || "pending_arrival");
 
             // Workflow status of requisition & slot
             const slotWfStatus = slot.workflowStatus || slot.slotStatus || r.workflowStatus || r.requestStatus || "PENDING_ADMIN";
             
-            // 🔒 กำหนดสเตจ: เคารพสเตจที่ตั้งไว้ล่าสุดเสมอ (ไม่ถูกดึงกลับเข้า received หรือ interview แบบไม่ตั้งใจ)
+            // 🔒 กำหนดสเตจเฉพาะ Slot นี้แบบอิสระ
             let effectiveStage = slot.stage;
             if (!effectiveStage) {
               if ((slot.candidateName && slot.candidateName.trim()) || (matchedCand && matchedCand.fullName)) {
@@ -1905,7 +1924,7 @@
 
             const slotEffectiveStatus = (slot.slotStatus === "Closed" || effectiveStage === "onboarded" || effectiveStage === "cancelled")
               ? "Closed"
-              : (slot.slotStatus || r.requestStatus || "READY_FOR_RECRUITMENT");
+              : (slot.slotStatus || "READY_FOR_RECRUITMENT");
 
             const resolvedDriveUrl = slot.resumeUrl || matchedCand?.resumeUrl || matchedCand?.driveUrl || "";
 
@@ -1925,7 +1944,7 @@
               driveUrl: resolvedDriveUrl,
               stage: effectiveStage,
               priority: slot.priority || r.priority || "NORMAL",
-              offerSentDate: slot.offerSentDate || r.offerSentDate || "",
+              offerSentDate: slot.offerSentDate || "",
               interviewSchedule: interviewInfo,
               interviewScore: currentEvals.length > 0 ? evalStats.combinedAvg : (slot.interviewScore || 0),
               interviewScorePercent: currentEvals.length > 0 ? evalStats.combinedPct : (slot.interviewScorePercent || 0),
@@ -1939,7 +1958,7 @@
               onboardingArrivalStatus: arrivalStatus,
               itEquipmentConfirmed: Boolean(slot.itEquipmentConfirmed),
               hasAttendedFirstDayTraining: Boolean(slot.hasAttendedFirstDayTraining || arrivalStatus === "arrived_reported"),
-              rejectionReason: slot.rejectionReason || r.rejectionReason || "",
+              rejectionReason: slot.rejectionReason || "",
               isArchivedFromKanban: !!slot.isArchivedFromKanban,
               isItNotified: Boolean(slot.isItNotified || r.isItNotified)
             };
@@ -3271,10 +3290,16 @@
 
       // Direct Stage Update
       const updateSlotStageDirectly = (targetSlotId, targetStage) => {
+        // 🔒 เฉพาะ Admin เท่านั้นที่สามารถเปลี่ยนขั้นตอนได้
+        if (!isAdminAuthenticated) {
+          triggerToast("⚠️ เฉพาะ Admin เท่านั้นที่มีสิทธิ์ย้ายขั้นตอนบนกระดาน");
+          return;
+        }
+
         const cleanSlotId = String(targetSlotId).trim();
         const todayStr = new Date().toISOString().split('T')[0];
 
-        // บันทึกสเตจใหม่ใน Local Ref เฉพาะ Slot นี้เท่านั้น
+        // บันทึกสเตจใหม่ใน Local Ref เฉพาะ Slot ID นี้เท่านั้น 100%
         recentLocalStageUpdates.current.set(cleanSlotId, { stage: targetStage, timestamp: Date.now() });
 
         setRequests(prev => prev.map(r => {
@@ -3283,30 +3308,27 @@
           if (!hasTargetSlot) return r;
 
           const headcount = Math.max(1, Number(r.headcountRequired) || (r.slots?.length || 1));
-          const baseSlots = (r.slots && r.slots.length > 0)
-            ? r.slots
-            : Array.from({ length: headcount }, (_, i) => ({
-                slotId: `${r.id}-${i + 1}`,
-                slotIndex: i + 1,
+          let currentSlots = (r.slots && r.slots.length > 0) ? [...r.slots] : [];
+          if (currentSlots.length < headcount) {
+            for (let i = currentSlots.length + 1; i <= headcount; i++) {
+              currentSlots.push({
+                slotId: `${r.id}-${i}`,
+                slotIndex: i,
                 slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
+                workflowStatus: r.workflowStatus || "READY_FOR_RECRUITMENT",
+                stage: "received",
                 candidateName: "",
                 candidatePhone: "",
                 candidateNickname: "",
                 resumeUrl: "",
-                stage: "received",
-                offerSentDate: "",
-                hireDate: "",
-                interviewScore: 0,
-                interviewScorePercent: 0,
-                interviewResult: "",
-                onboardingArrivalStatus: "pending_arrival",
-                rejectionReason: "",
                 evaluations: []
-              }));
+              });
+            }
+          }
 
           let slotUpdated = false;
-          const slots = baseSlots.map(s => {
-            // อัปเดตเฉพาะ Slot ID ที่ถูกกระทำเท่านั้น (แยกขาดจาก Slot อื่นในตำแหน่งเดียวกัน)
+          const slots = currentSlots.map(s => {
+            // 🎯 อัปเดตเฉพาะ Slot ID ที่ถูกกระทำเท่านั้น (อัตราอื่นในตำแหน่งเดียวกันจะคงเดิม 100%)
             if (s.slotId === cleanSlotId) {
               slotUpdated = true;
               const isNowOffer = targetStage === "offer";
@@ -3328,7 +3350,6 @@
             return {
               ...r,
               requestStatus: allSlotsClosed ? "Closed" : "Recruiting",
-              offerSentDate: targetStage === "offer" ? (r.offerSentDate || todayStr) : r.offerSentDate,
               slots,
               lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
             };
@@ -3351,6 +3372,12 @@
 
       // Stage Transition Gatekeeper (Trigger Modals for Interview / Onboarded / Cancelled)
       const handleInitiateStageChange = (slotId, targetStage) => {
+        // 🔒 เฉพาะ Admin เท่านั้นที่สามารถเปลี่ยนขั้นตอนได้
+        if (!isAdminAuthenticated) {
+          triggerToast("⚠️ เฉพาะ Admin เท่านั้นที่มีสิทธิ์ย้ายขั้นตอนบนกระดาน");
+          return;
+        }
+
         const cleanSlotId = String(slotId).trim();
         const slotItem = allPositionSlots.find(s => s.slotId === cleanSlotId);
         if (!slotItem) return;
@@ -3971,7 +3998,7 @@
 
                 {!isAdminAuthenticated && (
                   <div className="flex items-center gap-1.5 text-xs text-sky-800 dark:text-sky-200 bg-sky-50 dark:bg-sky-950/50 border border-sky-200 dark:border-sky-800 px-3 py-1.5 rounded-xl font-medium">
-                    <span>👥 <strong>โหมดพนักงาน (User View):</strong> สามารถร่วมติดตามความคืบหน้า และกดปุ่ม <span className="font-bold text-brand-600">⭐ ร่วมประเมิน</span> ในด่านสัมภาษณ์ได้</span>
+                    <span>👥 <strong>โหมดพนักงาน (User View):</strong> ดูข้อมูลความคืบหน้า และคลิก <span className="font-bold text-brand-600">⭐ ร่วมประเมิน</span> ในด่านสัมภาษณ์ได้ (สิทธิ์การย้ายขั้นตอนสงวนไว้สำหรับ Admin เท่านั้น)</span>
                   </div>
                 )}
               </div>
@@ -4197,7 +4224,7 @@
                           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                             {isAdminAuthenticated
                               ? "ลากย้ายขั้นตอน จัดการสถานะ และควบคุมกระบวนการสรรหาทั้งหมด (อัปเดตแบบ Real-time ตรงกับ User ทุกคน)"
-                              : "ติดตามขั้นตอนการสรรหาทุกตำแหน่ง และคลิกปุ่ม '⭐ ร่วมประเมิน' ในด่านสัมภาษณ์เพื่อประเมินผู้สมัครได้ทันที"}
+                              : "ติดตามขั้นตอนการสรรหาทุกตำแหน่ง และคลิกดูรายละเอียด หรือกดปุ่ม '⭐ ร่วมประเมิน' ในด่านสัมภาษณ์เพื่อประเมินผู้สมัครได้ทันที"}
                           </p>
                         </div>
 
@@ -4288,12 +4315,12 @@
                               onDragEnter={(e) => handleDragEnter(e, stage.id)}
                               onDragLeave={(e) => handleDragLeave(e, stage.id)}
                               onDrop={(e) => handleDrop(e, stage.id)}
-                              className="w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 transition-all duration-150"
+                              className="w-[304px] shrink-0 snap-start flex flex-col rounded-2xl p-3.5 border-2 border-slate-200/80 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/40 transition-all duration-150"
                             >
-                              <div className="flex items-center justify-between pb-2 mb-3 border-b border-slate-200 dark:border-slate-700 gap-1.5">
-                                <div className="flex items-center gap-1.5 truncate">
-                                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300 truncate">{stage.label}</span>
-                                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-400 shadow-2xs">
+                              <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-slate-200/80 dark:border-slate-700/80 gap-1.5">
+                                <div className="flex items-center gap-2 truncate">
+                                  <span className="text-xs font-bold text-slate-800 dark:text-slate-200 truncate">{stage.label}</span>
+                                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 shadow-2xs border border-slate-200/60 dark:border-slate-700">
                                     {stageItems.length}
                                   </span>
                                 </div>
@@ -4305,7 +4332,7 @@
                                       e.stopPropagation();
                                       handleOpenStageClearModal(stage.id, stage.label);
                                     }}
-                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300 hover:bg-slate-200/50 dark:hover:bg-slate-700/50 transition font-normal shrink-0"
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10.5px] text-slate-400 hover:text-slate-600 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200/60 dark:hover:bg-slate-700/60 transition font-medium shrink-0"
                                     title={`Clear ${stage.label}`}
                                   >
                                     <span>ล้างการ์ด</span>
@@ -4316,15 +4343,15 @@
                               <div 
                                 onDragOver={(e) => handleDragOver(e, stage.id)}
                                 onDrop={(e) => handleDrop(e, stage.id)}
-                                className="space-y-2.5 flex-1 overflow-y-auto max-h-[560px] pr-0.5 min-h-[140px] flex flex-col"
+                                className="space-y-3 flex-1 overflow-y-auto max-h-[580px] pr-0.5 min-h-[140px] flex flex-col"
                               >
                                 {stageItems.length === 0 && (
                                   <div 
                                     onDragOver={(e) => handleDragOver(e, stage.id)}
                                     onDrop={(e) => handleDrop(e, stage.id)}
-                                    className="h-32 rounded-xl border-2 border-dashed border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 text-[11px] p-3 text-center select-none my-auto cursor-pointer"
+                                    className="h-32 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 text-[11px] p-3 text-center select-none my-auto cursor-pointer"
                                   >
-                                    <span>วางการ์ดที่นี่เพื่อย้ายขั้นตอน</span>
+                                    <span className="font-medium">วางการ์ดที่นี่เพื่อย้ายขั้นตอน</span>
                                     <span className="text-[10px] text-slate-400/80 mt-0.5">(Drop card here)</span>
                                   </div>
                                 )}
@@ -4332,7 +4359,7 @@
                                 {stageItems.map(item => {
                                   const priorityInfo = getPositionPriorityInfo(item);
                                   const isArrived = item.stage === "onboarded" && (item.hasAttendedFirstDayTraining || item.onboardingArrivalStatus === "arrived_reported");
-                                  const canDrag = Boolean(currentUser);
+                                  const canDrag = Boolean(isAdminAuthenticated);
 
                                   return (
                                     <div
@@ -4347,40 +4374,78 @@
                                         if (isDraggingRef.current) return;
                                         setSelectedDetailSlot(item);
                                       }}
-                                      className={`p-3.5 rounded-2xl border select-none group hover:shadow-sm ${
+                                      className={`p-3.5 rounded-2xl border select-none group transition-shadow duration-150 shadow-2xs hover:shadow-sm overflow-hidden ${
                                         canDrag ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
                                       } ${
                                         item.stage === 'cancelled'
-                                          ? 'border-slate-200 dark:border-slate-800 bg-rose-50/20 dark:bg-rose-950/10'
+                                          ? 'border-rose-200/80 dark:border-rose-900/40 bg-rose-50/25 dark:bg-rose-950/15'
                                           : isArrived
-                                          ? 'border-emerald-200 dark:border-emerald-800/60 bg-emerald-50/30 dark:bg-emerald-950/20'
-                                          : 'border-slate-200/70 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
+                                          ? 'border-emerald-200/80 dark:border-emerald-800/60 bg-emerald-50/30 dark:bg-emerald-950/20'
+                                          : 'border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700'
                                       }`}
                                       style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
-                                      title="คลิกการ์ดเพื่อดูรายละเอียด หรือคลิกค้างแล้วลากการ์ดเพื่อย้ายสเตจ"
+                                      title={canDrag ? "คลิกเพื่อดูรายละเอียด หรือลากการ์ดเพื่อย้ายสเตจ" : "คลิกการ์ดเพื่อดูรายละเอียดตำแหน่ง"}
                                     >
-                                      {/* Top Row: Clean Slot ID & Subtle Priority Indicator */}
-                                      <div className="flex items-center justify-between text-[11px] mb-1.5 pointer-events-none">
+                                      {/* Top Row: Priority Badge, Slot ID & Discreet Action Icons */}
+                                      <div className="flex items-center justify-between text-[11px] mb-2 pointer-events-none">
                                         <div className="flex items-center gap-1.5">
-                                          <span className="text-slate-400 dark:text-slate-500 font-mono text-sm leading-none" title="คลิกค้างแล้วลากเพื่อย้ายขั้นตอน">⋮⋮</span>
+                                          {canDrag && (
+                                            <span className="text-slate-400 dark:text-slate-500 font-mono text-xs leading-none" title="คลิกค้างแล้วลากเพื่อย้ายขั้นตอน">⋮⋮</span>
+                                          )}
                                           <span className={`w-1.5 h-1.5 rounded-full ${priorityInfo.dotBg}`}></span>
-                                          <span className="font-medium text-slate-400 dark:text-slate-500 text-[10px]">
+                                          <span className="font-semibold text-slate-500 dark:text-slate-400 text-[10px]">
                                             {priorityInfo.label.split(' ')[0]}
                                           </span>
                                         </div>
-                                        <div className="flex items-center gap-1 font-mono text-[10.5px] text-slate-400">
-                                          <span>{item.slotId}</span>
+
+                                        <div className="flex items-center gap-1.5 pointer-events-auto" onClick={(e) => e.stopPropagation()}>
+                                          <span className="font-mono text-[10.5px] font-medium text-slate-400 dark:text-slate-500">
+                                            {item.slotId}
+                                          </span>
                                           {item.totalSlots > 1 && (
-                                            <span className="font-extrabold text-[9.5px] px-1.5 py-0.5 rounded bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300 border border-sky-300 dark:border-sky-700 shadow-2xs" title={`อัตราที่ ${item.slotIndex} จากทั้งหมด ${item.totalSlots} อัตรา`}>
+                                            <span className="font-extrabold text-[9.5px] px-1.5 py-0.5 rounded-md bg-sky-100 dark:bg-sky-950 text-sky-800 dark:text-sky-300 border border-sky-300 dark:border-sky-700 shadow-2xs" title={`อัตราที่ ${item.slotIndex} จากทั้งหมด ${item.totalSlots} อัตรา`}>
                                               {item.slotIndex}/{item.totalSlots}
                                             </span>
+                                          )}
+
+                                          {/* Admin Card Action Buttons (Discreet and perfectly contained at the top) */}
+                                          {isAdminAuthenticated && (
+                                            <div className="flex items-center gap-0.5 ml-1">
+                                              <button
+                                                type="button"
+                                                draggable={false}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  handleDuplicateSlot(item);
+                                                }}
+                                                className="p-1 rounded-lg text-slate-400 hover:text-sky-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                                                title="คัดลอกตำแหน่งนี้ (เพิ่มอัตราสำหรับ Candidate อีกคน)"
+                                              >
+                                                <span className="text-[11px] block leading-none">📋</span>
+                                              </button>
+                                              <button
+                                                type="button"
+                                                draggable={false}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setSlotToDelete(item);
+                                                  setDeletionReasonInput("");
+                                                }}
+                                                className="p-1 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                                                title="ลบตำแหน่งนี้ออกจากกระดาน"
+                                              >
+                                                <span className="text-[11px] block leading-none">🗑️</span>
+                                              </button>
+                                            </div>
                                           )}
                                         </div>
                                       </div>
 
-                                      {/* Title & Department with Balanced Hierarchy */}
+                                      {/* Title & Department with Balanced Typography */}
                                       {isAdminAuthenticated && editingCardTitleSlotId === item.slotId ? (
-                                        <div onClick={(e) => e.stopPropagation()} className="my-1.5 flex items-center gap-1">
+                                        <div onClick={(e) => e.stopPropagation()} className="my-1.5 flex items-center gap-1.5">
                                           <input
                                             type="text"
                                             autoFocus
@@ -4390,12 +4455,12 @@
                                               if (e.key === 'Enter') handleUpdateSlotJobTitle(item.slotId, editingCardTitleValue);
                                               if (e.key === 'Escape') setEditingCardTitleSlotId(null);
                                             }}
-                                            className="w-full px-2 py-1 text-xs font-bold rounded-lg border border-sky-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none"
+                                            className="w-full px-2.5 py-1 text-xs font-bold rounded-xl border border-sky-500 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none shadow-2xs"
                                           />
                                           <button
                                             type="button"
                                             onClick={() => handleUpdateSlotJobTitle(item.slotId, editingCardTitleValue)}
-                                            className="px-2 py-1 rounded-lg bg-emerald-600 text-white text-[10px] font-bold hover:bg-emerald-700 shrink-0"
+                                            className="px-2.5 py-1 rounded-xl bg-emerald-600 text-white text-[10.5px] font-bold hover:bg-emerald-700 shrink-0 shadow-2xs"
                                             title="บันทึก"
                                           >
                                             ✓
@@ -4403,7 +4468,7 @@
                                           <button
                                             type="button"
                                             onClick={() => setEditingCardTitleSlotId(null)}
-                                            className="px-2 py-1 rounded-lg bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] shrink-0"
+                                            className="px-2 py-1 rounded-xl bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10.5px] shrink-0"
                                             title="ยกเลิก"
                                           >
                                             ✕
@@ -4411,7 +4476,7 @@
                                         </div>
                                       ) : (
                                         <div className="flex items-start justify-between gap-1 group/title pointer-events-none">
-                                          <h4 className="text-xs font-semibold text-slate-900 dark:text-white line-clamp-2 leading-snug group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">
+                                          <h4 className="text-xs font-bold text-slate-900 dark:text-white line-clamp-2 leading-snug group-hover:text-sky-600 dark:group-hover:text-sky-400 transition-colors">
                                             {item.jobTitle}
                                           </h4>
                                           {isAdminAuthenticated && (
@@ -4425,77 +4490,90 @@
                                               className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-400 hover:text-sky-600 rounded transition shrink-0 pointer-events-auto"
                                               title="แก้ไขชื่อตำแหน่ง"
                                             >
-                                              ✏️
+                                              <span className="text-[11px]">✏️</span>
                                             </button>
                                           )}
                                         </div>
                                       )}
-                                      <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 truncate pointer-events-none">
+                                      <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5 truncate pointer-events-none font-medium">
                                         {item.department}
                                       </p>
 
-                                      {/* Candidate Info & Actions Footer */}
-                                      <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1">
+                                      {/* Candidate Info Line */}
+                                      <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between gap-1 text-[11px]">
                                         {item.candidateName ? (
-                                          <span className="text-[11px] font-medium text-slate-700 dark:text-slate-300 truncate pointer-events-none">
-                                            👤 {item.candidateName}
+                                          <span className="font-semibold text-slate-700 dark:text-slate-300 truncate pointer-events-none flex items-center gap-1">
+                                            <span className="text-slate-400">👤</span>
+                                            <span className="truncate">{item.candidateName}</span>
+                                            {item.candidateNickname && (
+                                              <span className="text-[10px] text-slate-400 font-normal">({item.candidateNickname})</span>
+                                            )}
                                           </span>
                                         ) : (
-                                          <span className="text-[10.5px] text-slate-400 italic pointer-events-none">
+                                          <span className="text-[10.5px] text-slate-400 dark:text-slate-500 italic pointer-events-none">
                                             (ยังไม่ระบุผู้สมัคร)
                                           </span>
                                         )}
 
+                                        {item.interviewSchedule && item.stage === "interview" && (
+                                          <span className="text-[9.5px] text-amber-600 dark:text-amber-400 font-semibold shrink-0">
+                                            📅 มีนัดแล้ว
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {/* Bottom Action Bar: Perfectly Balanced and Guaranteed Inside Card */}
+                                      {(item.stage === "interview" || item.stage === "onboarded" || isAdminAuthenticated) && (
                                         <div 
                                           onClick={(e) => e.stopPropagation()} 
                                           onMouseDown={(e) => e.stopPropagation()}
-                                          className="shrink-0 flex items-center gap-1.5"
+                                          className="mt-2.5 pt-2 border-t border-slate-100/90 dark:border-slate-800/80 flex items-center justify-between gap-2"
                                         >
-                                          
-                                          {/* ⭐ ปุ่มร่วมประเมินคะแนนสัมภาษณ์ */}
-                                          {item.stage === "interview" && (
-                                            <button
-                                              type="button"
-                                              draggable={false}
-                                              onMouseDown={(e) => e.stopPropagation()}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                handleOpenBlindEvaluationModal(item);
-                                              }}
-                                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-700 active:scale-95 text-white text-[10.5px] font-semibold transition cursor-pointer"
-                                              title="คลิกเพื่อร่วมประเมินคะแนนสัมภาษณ์ผู้สมัคร"
-                                            >
-                                              <Icon name="clipboardCheck" className="w-3 h-3 text-white" />
-                                              <span>⭐ ร่วมประเมิน</span>
-                                            </button>
-                                          )}
-
-                                          {/* Admin Controls */}
-                                          {isAdminAuthenticated && item.stage === "onboarded" && (
-                                            isArrived ? (
-                                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9.5px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800">
-                                                ✓ เริ่มงานแล้ว
-                                              </span>
-                                            ) : (
+                                          {/* Left Action Button (⭐ ร่วมประเมิน or Status) */}
+                                          <div className="flex items-center min-w-0">
+                                            {item.stage === "interview" && (
                                               <button
                                                 type="button"
                                                 draggable={false}
                                                 onMouseDown={(e) => e.stopPropagation()}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
-                                                  handleConfirmFirstDayTraining(item.slotId);
+                                                  handleOpenBlindEvaluationModal(item);
                                                 }}
-                                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-semibold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 transition cursor-pointer"
-                                                title="คลิกเพื่อยืนยันว่าพนักงานมาเริ่มงานแล้ว"
+                                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-700 hover:to-indigo-700 active:scale-95 text-white text-[10.5px] font-bold transition shadow-2xs cursor-pointer shrink-0"
+                                                title="คลิกเพื่อร่วมประเมินคะแนนสัมภาษณ์ผู้สมัคร"
                                               >
-                                                <span>✓ มาเริ่มงาน</span>
+                                                <Icon name="clipboardCheck" className="w-3 h-3 text-white" />
+                                                <span>⭐ ร่วมประเมิน</span>
                                               </button>
-                                            )
-                                          )}
+                                            )}
 
-                                          {/* Stage selector dropdown (แอดมินเท่านั้น) */}
-                                          {isAdminAuthenticated ? (
-                                            <div className="flex items-center gap-1">
+                                            {item.stage === "onboarded" && (
+                                              isArrived ? (
+                                                <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-lg text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 shrink-0">
+                                                  ✓ เริ่มงานแล้ว
+                                                </span>
+                                              ) : isAdminAuthenticated ? (
+                                                <button
+                                                  type="button"
+                                                  draggable={false}
+                                                  onMouseDown={(e) => e.stopPropagation()}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleConfirmFirstDayTraining(item.slotId);
+                                                  }}
+                                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10.5px] font-bold text-white bg-emerald-600 hover:bg-emerald-700 active:scale-95 transition cursor-pointer shadow-2xs shrink-0"
+                                                  title="คลิกเพื่อยืนยันว่าพนักงานมาเริ่มงานแล้ว"
+                                                >
+                                                  <span>✓ มาเริ่มงาน</span>
+                                                </button>
+                                              ) : null
+                                            )}
+                                          </div>
+
+                                          {/* Right Action: Stage Dropdown or Stage Badge */}
+                                          <div className="shrink-0 flex items-center">
+                                            {isAdminAuthenticated ? (
                                               <select
                                                 draggable={false}
                                                 onMouseDown={(e) => e.stopPropagation()}
@@ -4505,49 +4583,22 @@
                                                   e.stopPropagation();
                                                   handleInitiateStageChange(item.slotId, e.target.value);
                                                 }}
-                                                className="text-[10px] font-medium py-0.5 px-1.5 rounded-md bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 focus:outline-none cursor-pointer"
+                                                className="text-[10.5px] font-semibold py-1 px-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer shadow-2xs"
                                               >
                                                 {STAGES.map(st => (
                                                   <option key={st.id} value={st.id}>{st.id}</option>
                                                 ))}
                                               </select>
-                                              <button
-                                                type="button"
-                                                draggable={false}
-                                                onMouseDown={(e) => e.stopPropagation()}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  handleDuplicateSlot(item);
-                                                }}
-                                                className="p-1 rounded text-slate-400 hover:text-sky-600 transition cursor-pointer"
-                                                title="คัดลอกตำแหน่งนี้ (เพิ่มอัตราสำหรับ Candidate อีกคน)"
-                                              >
-                                                <span className="text-xs">📋</span>
-                                              </button>
-                                              <button
-                                                type="button"
-                                                draggable={false}
-                                                onMouseDown={(e) => e.stopPropagation()}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  setSlotToDelete(item);
-                                                  setDeletionReasonInput("");
-                                                }}
-                                                className="p-1 rounded text-slate-400 hover:text-rose-600 transition cursor-pointer"
-                                                title="ลบตำแหน่งนี้ออกจากกระดาน"
-                                              >
-                                                <span className="text-xs">🗑️</span>
-                                              </button>
-                                            </div>
-                                          ) : (
-                                            item.stage !== "interview" && (
-                                              <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
-                                                {item.stage}
-                                              </span>
-                                            )
-                                          )}
+                                            ) : (
+                                              item.stage !== "interview" && (
+                                                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500">
+                                                  {item.stage}
+                                                </span>
+                                              )
+                                            )}
+                                          </div>
                                         </div>
-                                      </div>
+                                      )}
                                     </div>
                                   );
                                 })}
