@@ -1585,50 +1585,49 @@
                 const remoteWfItem = serverStatuses[mainId] || serverStatuses[cleanId];
 
                 const updatedSlots = (r.slots || []).map(s => {
-                  const stageOverride = slotStages[s.slotId] || slotStages[mainId];
+                  const slotOverride = slotStages[s.slotId];
+                  const mainOverride = slotStages[mainId];
                   const itAckFromRemote = Boolean(itConfirmedSlots[s.slotId] || itConfirmedSlots[mainId]);
                   const remoteEvals = evalsMap[s.slotId] || [];
 
                   // ตรวจสอบการลบถาวร
-                  if (stageOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
+                  if (slotOverride?.isDeleted || mainOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
                     return null;
                   }
 
-                  const newWfStatus = remoteWfItem?.status || stageOverride?.slotStatus || s.workflowStatus;
-                  const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(stageOverride?.itEquipmentConfirmed);
+                  const newWfStatus = remoteWfItem?.status || slotOverride?.slotStatus || mainOverride?.slotStatus || s.workflowStatus;
+                  const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(slotOverride?.itEquipmentConfirmed);
                   
-                  // สเตจจริง: ตรวจสอบว่าแอดมินเพิ่งเปลี่ยนสเตจในเครื่องนี้หรือไม่ (ถ้าเพิ่งเปลี่ยนไม่เกิน 10 วินาที ให้ใช้สเตจใหม่เสมอ)
+                  // สเตจจริง: เคารพเฉพาะสเตจของ Slot ตนเองเท่านั้น (ไม่ดึงสเตจของ Requisition แม่มาทับ Slot อื่น)
                   let effectiveStage = s.stage;
                   const recent = recentLocalStageUpdates.current.get(s.slotId);
                   if (recent && (Date.now() - recent.timestamp < 10000)) {
                     effectiveStage = recent.stage;
-                  } else if (stageOverride?.stage) {
-                    effectiveStage = stageOverride.stage;
-                  } else if (stageOverride?.candidateName && !s.stage) {
-                    effectiveStage = "interview";
+                  } else if (slotOverride?.stage) {
+                    effectiveStage = slotOverride.stage;
                   }
 
                   return {
                     ...s,
-                    jobTitle: stageOverride?.jobTitle || s.jobTitle,
+                    jobTitle: slotOverride?.jobTitle || mainOverride?.jobTitle || s.jobTitle,
                     workflowStatus: newWfStatus || s.workflowStatus,
-                    slotStatus: stageOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
+                    slotStatus: slotOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
                     stage: effectiveStage,
-                    priority: stageOverride?.priority || s.priority || "NORMAL",
-                    candidateName: stageOverride?.candidateName !== undefined ? stageOverride.candidateName : s.candidateName,
-                    candidatePhone: stageOverride?.candidatePhone !== undefined ? stageOverride.candidatePhone : s.candidatePhone,
-                    candidateNickname: stageOverride?.candidateNickname !== undefined ? stageOverride.candidateNickname : s.candidateNickname,
-                    resumeUrl: stageOverride?.resumeUrl || s.resumeUrl,
-                    driveUrl: stageOverride?.resumeUrl || s.driveUrl,
-                    interviewSchedule: stageOverride?.interviewSchedule !== undefined ? stageOverride.interviewSchedule : s.interviewSchedule,
-                    googleMeetUrl: stageOverride?.googleMeetUrl !== undefined ? stageOverride.googleMeetUrl : s.googleMeetUrl,
-                    hireDate: stageOverride?.hireDate !== undefined ? stageOverride.hireDate : s.hireDate,
-                    rejectionReason: stageOverride?.rejectionReason !== undefined ? stageOverride.rejectionReason : s.rejectionReason,
-                    onboardingArrivalStatus: stageOverride?.onboardingArrivalStatus || s.onboardingArrivalStatus || "pending_arrival",
-                    hasAttendedFirstDayTraining: stageOverride?.hasAttendedFirstDayTraining !== undefined ? stageOverride.hasAttendedFirstDayTraining : s.hasAttendedFirstDayTraining,
+                    priority: slotOverride?.priority || s.priority || "NORMAL",
+                    candidateName: slotOverride?.candidateName !== undefined ? slotOverride.candidateName : s.candidateName,
+                    candidatePhone: slotOverride?.candidatePhone !== undefined ? slotOverride.candidatePhone : s.candidatePhone,
+                    candidateNickname: slotOverride?.candidateNickname !== undefined ? slotOverride.candidateNickname : s.candidateNickname,
+                    resumeUrl: slotOverride?.resumeUrl || s.resumeUrl,
+                    driveUrl: slotOverride?.resumeUrl || s.driveUrl,
+                    interviewSchedule: slotOverride?.interviewSchedule !== undefined ? slotOverride.interviewSchedule : s.interviewSchedule,
+                    googleMeetUrl: slotOverride?.googleMeetUrl !== undefined ? slotOverride.googleMeetUrl : s.googleMeetUrl,
+                    hireDate: slotOverride?.hireDate !== undefined ? slotOverride.hireDate : s.hireDate,
+                    rejectionReason: slotOverride?.rejectionReason !== undefined ? slotOverride.rejectionReason : s.rejectionReason,
+                    onboardingArrivalStatus: slotOverride?.onboardingArrivalStatus || s.onboardingArrivalStatus || "pending_arrival",
+                    hasAttendedFirstDayTraining: slotOverride?.hasAttendedFirstDayTraining !== undefined ? slotOverride.hasAttendedFirstDayTraining : s.hasAttendedFirstDayTraining,
                     itEquipmentConfirmed: isItConfirmed,
-                    isItNotified: isItConfirmed ? true : Boolean(stageOverride?.isItNotified || s.isItNotified),
-                    isArchivedFromKanban: stageOverride?.isArchivedFromKanban !== undefined ? Boolean(stageOverride.isArchivedFromKanban) : Boolean(s.isArchivedFromKanban),
+                    isItNotified: isItConfirmed ? true : Boolean(slotOverride?.isItNotified || s.isItNotified),
+                    isArchivedFromKanban: slotOverride?.isArchivedFromKanban !== undefined ? Boolean(slotOverride.isArchivedFromKanban) : Boolean(s.isArchivedFromKanban),
                     evaluations: remoteEvals.length > 0 ? remoteEvals : (s.evaluations || [])
                   };
                 }).filter(Boolean);
@@ -1704,28 +1703,35 @@
               const candPhone = (r[31] || "").trim();
               const rawReqStatus = (r[28] || "").trim();
 
-              // คำนวณ Stage เริ่มต้นจากข้อมูลจริงใน Sheet
-              let defaultStage = "received";
-              if (candName) {
-                defaultStage = "interview";
-              } else if (rawReqStatus === "READY_FOR_RECRUITMENT" || rawReqStatus === "Recruiting") {
-                defaultStage = "manpower";
+              // คำนวณ Stage เริ่มต้นของคำขอ
+              let defaultReqStage = "received";
+              if (rawReqStatus === "READY_FOR_RECRUITMENT" || rawReqStatus === "Recruiting") {
+                defaultReqStage = "manpower";
               } else if (rawReqStatus === "Closed") {
-                defaultStage = "onboarded";
+                defaultReqStage = "onboarded";
               }
 
-              const slots = Array.from({ length: headcount }, (_, idx) => ({
-                slotId: `${reqId}-${idx + 1}`,
-                slotIndex: idx + 1,
-                slotStatus: rawReqStatus || "PENDING_ADMIN",
-                workflowStatus: rawReqStatus || "PENDING_ADMIN",
-                stage: defaultStage,
-                candidateName: candName,
-                candidatePhone: candPhone,
-                resumeUrl: driveUrl,
-                driveUrl: driveUrl,
-                evaluations: []
-              }));
+              // ผู้สมัครจากชีทจะถูกกำหนดให้กับ Slot แรกเท่านั้น ส่วน Slot ถัดไปจะเป็นอัตราว่างรอการสรรหา
+              const slots = Array.from({ length: headcount }, (_, idx) => {
+                const isFirstSlot = idx === 0;
+                const slotCandName = isFirstSlot ? candName : "";
+                const slotCandPhone = isFirstSlot ? candPhone : "";
+                const slotDriveUrl = isFirstSlot ? driveUrl : "";
+                const slotStage = (isFirstSlot && slotCandName) ? "interview" : defaultReqStage;
+
+                return {
+                  slotId: `${reqId}-${idx + 1}`,
+                  slotIndex: idx + 1,
+                  slotStatus: rawReqStatus || "PENDING_ADMIN",
+                  workflowStatus: rawReqStatus || "PENDING_ADMIN",
+                  stage: slotStage,
+                  candidateName: slotCandName,
+                  candidatePhone: slotCandPhone,
+                  resumeUrl: slotDriveUrl,
+                  driveUrl: slotDriveUrl,
+                  evaluations: []
+                };
+              });
 
               parsedList.push({
                 id: reqId,
@@ -1780,15 +1786,15 @@
                       const prevSlot = prevItem.slots?.[idx];
                       if (!prevSlot) return fs;
 
-                      // ถ้ารายการเดิมมี Candidate หรือ Stage ที่ย้ายไปแล้ว ให้คงไว้เสมอ
-                      const keepStage = (prevSlot.stage && prevSlot.stage !== "received") ? prevSlot.stage : fs.stage;
+                      // คงสถานะและแคนดิเดตของแต่ละ Slot แยกกันโดยอิสระ
+                      const keepStage = prevSlot.stage || fs.stage;
                       return {
                         ...fs,
                         ...prevSlot,
                         stage: keepStage,
-                        candidateName: prevSlot.candidateName || fs.candidateName,
-                        candidatePhone: prevSlot.candidatePhone || fs.candidatePhone,
-                        resumeUrl: prevSlot.resumeUrl || fs.resumeUrl,
+                        candidateName: prevSlot.candidateName !== undefined ? prevSlot.candidateName : fs.candidateName,
+                        candidatePhone: prevSlot.candidatePhone !== undefined ? prevSlot.candidatePhone : fs.candidatePhone,
+                        resumeUrl: prevSlot.resumeUrl !== undefined ? prevSlot.resumeUrl : fs.resumeUrl,
                         interviewSchedule: prevSlot.interviewSchedule || fs.interviewSchedule,
                         evaluations: prevSlot.evaluations || []
                       };
@@ -2229,7 +2235,8 @@
             }
             return s;
           });
-          return { ...r, stage: "interview", slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
+          // ปรับปรุงเฉพาะ slots โดยไม่เปลี่ยน r.stage เพื่อไม่ให้ดึง Slot อื่นไปด้วย
+          return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
 
         recentLocalStageUpdates.current.set(targetSlot.slotId, { stage: "interview", timestamp: Date.now() });
@@ -3267,7 +3274,7 @@
         const cleanSlotId = String(targetSlotId).trim();
         const todayStr = new Date().toISOString().split('T')[0];
 
-        // บันทึกสเตจใหม่ใน Local Ref ทันทีเพื่อป้องกันไม่ให้ Polling ทุก 3 วินาทีนำสเตจเก่ามาทับ
+        // บันทึกสเตจใหม่ใน Local Ref เฉพาะ Slot นี้เท่านั้น
         recentLocalStageUpdates.current.set(cleanSlotId, { stage: targetStage, timestamp: Date.now() });
 
         setRequests(prev => prev.map(r => {
@@ -3282,14 +3289,13 @@
                 slotId: `${r.id}-${i + 1}`,
                 slotIndex: i + 1,
                 slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
-                candidateName: r.candidateName || "",
-                candidatePhone: r.candidatePhone || "",
-                candidateNickname: r.candidateNickname || "",
-                resumeUrl: r.resumeUrl || "",
-                stage: r.stage || "received",
+                candidateName: "",
+                candidatePhone: "",
+                candidateNickname: "",
+                resumeUrl: "",
+                stage: "received",
                 offerSentDate: "",
                 hireDate: "",
-                interviewSchedule: "",
                 interviewScore: 0,
                 interviewScorePercent: 0,
                 interviewResult: "",
@@ -3300,7 +3306,8 @@
 
           let slotUpdated = false;
           const slots = baseSlots.map(s => {
-            if (s.slotId === cleanSlotId || (baseSlots.length === 1 && (s.slotId.startsWith(r.id) || r.id === parentReqId))) {
+            // อัปเดตเฉพาะ Slot ID ที่ถูกกระทำเท่านั้น (แยกขาดจาก Slot อื่นในตำแหน่งเดียวกัน)
+            if (s.slotId === cleanSlotId) {
               slotUpdated = true;
               const isNowOffer = targetStage === "offer";
               const isNowCancelled = targetStage === "cancelled";
@@ -3320,7 +3327,6 @@
             const allSlotsClosed = slots.every(s => s.slotStatus === "Closed" || s.stage === "onboarded" || s.stage === "cancelled");
             return {
               ...r,
-              stage: targetStage,
               requestStatus: allSlotsClosed ? "Closed" : "Recruiting",
               offerSentDate: targetStage === "offer" ? (r.offerSentDate || todayStr) : r.offerSentDate,
               slots,
@@ -3333,7 +3339,7 @@
         // อัปเดต selectedDetailSlot ทันทีหากกำลังเปิดดูอยู่
         setSelectedDetailSlot(prev => prev && prev.slotId === cleanSlotId ? { ...prev, stage: targetStage } : prev);
 
-        // 🔄 ส่งขั้นตอนใหม่ไปยังศูนย์กลาง Apps Script ทันที
+        // 🔄 ส่งขั้นตอนใหม่ไปยังศูนย์กลาง Apps Script ทันทีเฉพาะรหัส Slot นี้
         sendCentralSlotStageUpdate(cleanSlotId, {
           stage: targetStage,
           offerSentDate: targetStage === "offer" ? todayStr : undefined
