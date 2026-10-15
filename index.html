@@ -182,7 +182,7 @@
     const GOOGLE_SHEET_CANDIDATES_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=546067727";
     const GOOGLE_SHEET_MANPOWER_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1528284561";
     const CANDIDATES_SHEET_EDIT_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=546067727#gid=546067727";
-    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyHPI4PYGcGTn4nDbKBW74NJJQjUyKaXJWf3OK5uIr_9peTL3UwnOGLH8wwY8-gmFqbWA/exec";
+    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwYxBTcAB9--ZL_bgdqIO2Xef-8VOboTKOdyA6vpadtsz6jY9vJWKKLEmEhd0ep18KHSw/exec";
 
     const cleanCandidateName = (fullName) => {
       if (!fullName) return "";
@@ -2743,7 +2743,7 @@
         triggerToast("💻 อัปเดตสถานะความพร้อมอุปกรณ์ IT เรียบร้อยแล้ว");
       };
 
-      // ฟังก์ชันส่งข้อมูล Slot ที่ Closed ไปบันทึกลง Google Sheet แผ่นงาน Closed (GID 396528947) พร้อมลิงก์ Drive
+      // ฟังก์ชันส่งข้อมูล Slot ที่ Closed ไปบันทึกลง Google Sheet แผ่นงาน Closed (GID 396528947) พร้อมลิงก์ Drive และข้อมูล IT
       const syncSlotToClosedSheet = async (slotItem, silent = false) => {
         if (!slotItem) return;
         const targetUrl = googleScriptUrl || DEFAULT_APPS_SCRIPT_WEBAPP_URL;
@@ -2753,6 +2753,16 @@
           (slotItem.candidateName && c.fullName && isSameCandidate(c.fullName, slotItem.candidateName)) ||
           (slotItem.candidateNickname && c.nickname && c.nickname.trim() === slotItem.candidateNickname.trim())
         );
+
+        const parentReq = requests.find(r => r.id === (slotItem.parentRequestId || slotItem.id)) || {};
+        const itLaptop = slotItem.itLaptop || parentReq.itLaptop || "ต้องการ";
+        const itSimCard = slotItem.itSimCard || parentReq.itSimCard || "ไม่ต้องการ";
+        const itEmail = slotItem.itEmail || parentReq.itEmail || "ต้องการ";
+        const itNetsuite = slotItem.itNetsuite || parentReq.itNetsuite || "ไม่ต้องการ";
+        const itConfirmed = Boolean(slotItem.itEquipmentConfirmed || parentReq.itEquipmentConfirmed);
+        const itStatus = itConfirmed
+          ? "✅ IT รับทราบ & อุปกรณ์พร้อมแล้ว"
+          : (slotItem.isItNotified ? "⏳ ส่งแจ้ง IT แล้ว (รอ IT ยืนยัน)" : "ยังไม่ได้แจ้ง IT");
 
         const resolvedDrive = String(slotItem.resumeUrl || slotItem.driveUrl || cand?.resumeUrl || cand?.driveUrl || "").trim();
         const candidateName = slotItem.candidateName || cand?.fullName || "";
@@ -2785,12 +2795,19 @@
               requesterName: slotItem.requesterName || "",
               remark: slotItem.rejectionReason || "ปิดการสรรหาเรียบร้อยแล้ว (Closed)",
               driveUrl: resolvedDrive,
-              resumeUrl: resolvedDrive
+              resumeUrl: resolvedDrive,
+              // ข้อมูล IT เพิ่มเติมลงชีท Closed
+              itLaptop: itLaptop,
+              itSimCard: itSimCard,
+              itEmail: itEmail,
+              itNetsuite: itNetsuite,
+              itEquipmentConfirmed: itConfirmed,
+              itStatus: itStatus
             })
           });
 
           if (!silent) {
-            triggerToast(`✅ ซิงค์ Slot #${slotItem.slotId} พร้อมลิงก์ Drive ลง Sheet Closed สำเร็จ!`);
+            triggerToast(`✅ ซิงค์ Slot #${slotItem.slotId} พร้อมข้อมูล IT & ลิงก์ Drive ลง Sheet Closed สำเร็จ!`);
           }
         } catch (err) {
           if (!silent) triggerToast("❌ เกิดข้อผิดพลาดในการซิงค์: " + (err.message || err));
@@ -2862,11 +2879,11 @@
           triggerToast("ไม่มีรายการ Closed ให้ซิงค์");
           return;
         }
-        triggerToast(`⏳ กำลังซิงค์ ${closedSlots.length} รายการพร้อมลิงก์ Drive เข้า Sheet Closed...`);
+        triggerToast(`⏳ กำลังซิงค์ ${closedSlots.length} รายการพร้อมข้อมูล IT และลิงก์ Drive เข้า Sheet Closed...`);
         for (const s of closedSlots) {
           await syncSlotToClosedSheet(s, true);
         }
-        triggerToast(`🎉 ซิงค์รายการ Closed ทั้งหมด (${closedSlots.length} รายการ) ลง Sheet Closed (GID 396528947) เรียบร้อย!`);
+        triggerToast(`🎉 ซิงค์รายการ Closed ทั้งหมด (${closedSlots.length} รายการ) พร้อมข้อมูล IT ลง Sheet Closed (GID 396528947) เรียบร้อย!`);
       };
 
       // อัปเดต Priority ของ Slot แบบระบุเองได้
@@ -3579,11 +3596,14 @@
         const headers = [
           "Slot ID", "Request ID", "Date", "Slot Status", "Job Title", "Position Type", "Replaced Name",
           "Department", "Stage", "Working Days Elapsed", "Total Recruitment Days", "Candidate", "Interview Schedule",
-          "Evaluations Count", "Combined Score (1-5)", "Score %", "Result", "Hire Date", "Arrival Status", "Rejection Reason"
+          "Evaluations Count", "Combined Score (1-5)", "Score %", "Result", "Hire Date", "Arrival Status", "Rejection Reason",
+          "Google Drive Link", "Laptop / PC", "Sim Card / โทรศัพท์", "Email องค์กร", "ERP Netsuite", "สถานะอุปกรณ์ IT"
         ];
         const rows = allPositionSlots.map(s => {
           const sla = getSLAInfo(s.requestDate, s.stage, s.offerSentDate);
           const duration = getRecruitmentDurationInfo(s.requestDate, s.hireDate, s.lastUpdated);
+          const parentReq = requests.find(r => r.id === (s.parentRequestId || s.id)) || {};
+          const itStatus = (s.itEquipmentConfirmed || parentReq.itEquipmentConfirmed) ? "พร้อมแล้ว (Confirmed)" : (s.isItNotified ? "แจ้ง IT แล้ว" : "ยังไม่ได้แจ้ง");
           return [
             s.slotId, s.id, s.requestDate, s.slotStatus, `"${s.jobTitle}"`, s.positionType,
             `"${s.replacedEmployeeName || ''}"`, `"${s.department}"`, s.stage,
@@ -3592,7 +3612,13 @@
             `"${s.candidateName || ''}"`, `"${s.interviewSchedule || ''}"`,
             s.evaluationsCount || 0,
             s.interviewScore || "", s.interviewScorePercent ? `${s.interviewScorePercent}%` : "", s.interviewResult || "",
-            `"${s.hireDate || ''}"`, `"${s.onboardingArrivalStatus || ''}"`, `"${s.rejectionReason || ''}"`
+            `"${s.hireDate || ''}"`, `"${s.onboardingArrivalStatus || ''}"`, `"${s.rejectionReason || ''}"`,
+            `"${s.resumeUrl || ''}"`,
+            `"${s.itLaptop || parentReq.itLaptop || 'ต้องการ'}"`,
+            `"${s.itSimCard || parentReq.itSimCard || 'ไม่ต้องการ'}"`,
+            `"${s.itEmail || parentReq.itEmail || 'ต้องการ'}"`,
+            `"${s.itNetsuite || parentReq.itNetsuite || 'ไม่ต้องการ'}"`,
+            `"${itStatus}"`
           ];
         });
         const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
@@ -4446,6 +4472,13 @@
 
                         {manpowerTableTab === "closed" && (
                           <div className="flex items-center gap-2">
+                            <button
+                              onClick={handleSyncAllClosedToSheet}
+                              className="px-3 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] flex items-center gap-1 transition shadow-xs cursor-pointer active:scale-95"
+                              title="กดเพื่อส่งข้อมูลรายการที่ Closed ทั้งหมดพร้อมข้อมูล IT ลง Google Sheet"
+                            >
+                              <span>🔄 ซิงค์ข้อมูล Closed + IT ลง Sheet</span>
+                            </button>
                             <a
                               href="https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=396528947#gid=396528947"
                               target="_blank"
@@ -4475,6 +4508,7 @@
                               {manpowerTableTab === "closed" && <th className="px-3 py-2.5">Hire Date &amp; Arrival</th>}
                               {manpowerTableTab === "closed" && <th className="px-3 py-2.5">Total Duration</th>}
                               {manpowerTableTab === "closed" && <th className="px-3 py-2.5">Google Drive / เอกสาร</th>}
+                              {manpowerTableTab === "closed" && <th className="px-3 py-2.5">อุปกรณ์ IT ที่ขอ</th>}
                               <th className="px-3 py-2.5">Evaluation</th>
                               <th className="px-3 py-2.5 text-center">Action</th>
                             </tr>
@@ -4482,7 +4516,7 @@
                           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                             {(manpowerTableTab === "in_process" ? inProcessSlots : closedSlots).length === 0 ? (
                               <tr>
-                                <td colSpan={manpowerTableTab === "closed" ? "12" : "9"} className="text-center py-6 text-slate-400 italic">
+                                <td colSpan={manpowerTableTab === "closed" ? "13" : "9"} className="text-center py-6 text-slate-400 italic">
                                   ไม่มีรายการในหมวดนี้
                                 </td>
                               </tr>
@@ -4494,6 +4528,7 @@
                                 const isPassingScore = s.interviewScorePercent >= 70;
                                 const isArrivedSuccess = s.onboardingArrivalStatus === "arrived_reported";
                                 const isDeclinedOrCancelled = s.stage === "cancelled" || s.onboardingArrivalStatus === "declined_noshow";
+                                const parentReq = requests.find(r => r.id === (s.parentRequestId || s.id)) || {};
 
                                 const rowHighlightClass = isDeclinedOrCancelled
                                   ? "bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100/80 transition cursor-pointer"
@@ -4752,6 +4787,43 @@
                                         ) : (
                                           <span className="text-[11px] text-slate-400 italic">ไม่มีลิงก์</span>
                                         )}
+                                      </td>
+                                    )}
+
+                                    {/* Closed-Tab Specific: IT Equipment Information */}
+                                    {manpowerTableTab === "closed" && (
+                                      <td className="px-3 py-2.5">
+                                        <div className="text-[10.5px] space-y-0.5">
+                                          <div className="flex items-center gap-1">
+                                            <span className="font-semibold text-slate-500">💻 Laptop:</span>
+                                            <span className={(s.itLaptop || parentReq.itLaptop) === "ต้องการ" ? "text-sky-600 font-bold" : "text-slate-400"}>
+                                              {s.itLaptop || parentReq.itLaptop || "ต้องการ"}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1">
+                                            <span className="font-semibold text-slate-500">📱 Sim:</span>
+                                            <span className={(s.itSimCard || parentReq.itSimCard) === "ต้องการ" ? "text-sky-600 font-bold" : "text-slate-400"}>
+                                              {s.itSimCard || parentReq.itSimCard || "ไม่ต้องการ"}
+                                            </span>
+                                          </div>
+                                          <div className="flex items-center gap-1">
+                                            <span className="font-semibold text-slate-500">✉️ Email:</span>
+                                            <span className={(s.itEmail || parentReq.itEmail) === "ต้องการ" ? "text-sky-600 font-bold" : "text-slate-400"}>
+                                              {s.itEmail || parentReq.itEmail || "ต้องการ"}
+                                            </span>
+                                          </div>
+                                          <div className="pt-0.5">
+                                            <span className={`inline-block px-1.5 py-0.2 rounded text-[9.5px] font-bold ${
+                                              s.itEquipmentConfirmed || parentReq.itEquipmentConfirmed
+                                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                                                : s.isItNotified
+                                                ? "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
+                                                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                                            }`}>
+                                              {s.itEquipmentConfirmed || parentReq.itEquipmentConfirmed ? "✅ IT พร้อมแล้ว" : (s.isItNotified ? "⏳ แจ้ง IT แล้ว" : "ยังไม่ได้แจ้ง")}
+                                            </span>
+                                          </div>
+                                        </div>
                                       </td>
                                     )}
 
