@@ -182,7 +182,7 @@
     const GOOGLE_SHEET_CANDIDATES_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=546067727";
     const GOOGLE_SHEET_MANPOWER_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1528284561";
     const CANDIDATES_SHEET_EDIT_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=546067727#gid=546067727";
-    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbyaK-2g8n7JWrZWaLJa0OP3LoMcbTeqe-U5IHO6g7qc_Riq7SNAmrDXkZFXvIGyAaPp5Q/exec";
+    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbzzj2BQteWS7pQCfKqOSj5vxNB76YKF-mIUEcHeo6eYUDjYZwAR2xuWzsTtm9hQENK3SA/exec";
 
     const cleanCandidateName = (fullName) => {
       if (!fullName) return "";
@@ -702,6 +702,12 @@
     const PROD_REQUESTS_KEY = "hr_requests_prod_v1";
     const PROD_CANDIDATES_KEY = "hr_candidates_prod_v1";
     const PROD_PERSONNEL_KEY = "hr_personnel_prod_v1";
+    const PROD_DELETED_KEY = "hr_deleted_slots_v2";
+
+    // BroadcastChannel สำหรับซิงค์สถานะข้ามหน้าต่าง/ข้ามเบราว์เซอร์ในเครื่องเดียวกันทันที (0ms)
+    const syncBroadcastChannel = typeof window !== "undefined" && window.BroadcastChannel
+      ? new window.BroadcastChannel("hr_central_sync_bus")
+      : null;
 
     function App() {
       const [requests, setRequests] = useState(() => {
@@ -724,6 +730,14 @@
         localStorage.setItem("hr_apps_script_url_v64", targetUrl);
         return targetUrl;
       });
+
+      // Real-time Central Sync Health Monitor State
+      const [syncHealth, setSyncHealth] = useState({
+        status: "syncing", // "connected" | "syncing" | "error"
+        lastSyncTime: "-",
+        errorMessage: ""
+      });
+      const [showSyncDiagModal, setShowSyncDiagModal] = useState(false);
 
       const [darkMode, setDarkMode] = useState(() => {
         return localStorage.getItem("theme_mode") === "dark" || 
@@ -748,339 +762,7 @@
         localStorage.setItem(PROD_CANDIDATES_KEY, JSON.stringify(candidatePool));
       }, [candidatePool]);
 
-      // ฟังก์ชันส่งอัปเดตสเตจและสถานะของ Slot ไปยังศูนย์กลาง (Apps Script Backend)
-      const sendCentralSlotStageUpdate = async (slotId, stagePayload) => {
-        if (!googleScriptUrl || !slotId) return;
-        try {
-          fetch(googleScriptUrl, {
-            method: "POST",
-            mode: "no-cors",
-            headers: { "Content-Type": "text/plain" },
-            body: JSON.stringify({
-              action: "updateSlotStage",
-              slotId: slotId,
-              ...stagePayload
-            })
-          }).catch(() => {});
-        } catch (e) {}
-      };
-
-      // ฟังก์ชันส่งผลการประเมินคะแนนสัมภาษณ์ไปยังศูนย์กลาง (Apps Script Backend)
-      const sendCentralEvaluation = async (slotId, evalData) => {
-        if (!googleScriptUrl || !slotId || !evalData) return;
-        try {
-          fetch(googleScriptUrl, {
-            method: "POST",
-            mode: "no-cors",
-            headers: { "Content-Type": "text/plain" },
-            body: JSON.stringify({
-              action: "saveBlindEvaluation",
-              slotId: slotId,
-              evaluation: evalData
-            })
-          }).catch(() => {});
-        } catch (e) {}
-      };
-
-      // ฟังก์ชันส่งการลบตำแหน่งไปยังศูนย์กลาง (Apps Script Backend)
-      const sendCentralSlotDeletion = async (slotId, reason) => {
-        if (!googleScriptUrl || !slotId) return;
-        try {
-          fetch(googleScriptUrl, {
-            method: "POST",
-            mode: "no-cors",
-            headers: { "Content-Type": "text/plain" },
-            body: JSON.stringify({
-              action: "deleteSlot",
-              slotId: slotId,
-              reason: reason || "Deleted by admin"
-            })
-          }).catch(() => {});
-        } catch (e) {}
-      };
-
-      // Real-time Background Polling & Manual Sync Function (Central Source of Truth)
-      const syncWorkflowStatus = async (silent = true) => {
-        if (!googleScriptUrl) return;
-
-        try {
-          const res = await fetch(`${googleScriptUrl}?action=getWorkflowStatuses&_t=${Date.now()}`, {
-            cache: "no-store",
-            headers: { "Pragma": "no-cache", "Cache-Control": "no-cache" }
-          });
-          const resJson = await res.json();
-
-          if (resJson && resJson.status === "success") {
-            const serverStatuses = resJson.data || resJson.slotStages || {};
-            const itConfirmedSlots = resJson.itConfirmedSlots || {};
-            const slotStages = resJson.slotStages || {};
-            const evalsMap = resJson.evaluations || {};
-            const deletedMap = resJson.deletedSlots || {};
-            const remoteRequisitions = resJson.requisitions || [];
-            const remoteCandidates = resJson.candidates || [];
-
-            // 1. อัปเดต Candidate Pool ให้ทุกหน้าต่างตรงกันแบบ Real-time
-            if (remoteCandidates.length > 0) {
-              setCandidatePool(prevPool => {
-                const updatedPool = remoteCandidates.map(c => {
-                  // ตรวจสอบว่าแคนดิเดตคนนี้ถูกแมปเข้ากับ Slot ใดใน slotStages หรือไม่
-                  let assignedSlot = "";
-                  for (const [sId, sData] of Object.entries(slotStages)) {
-                    if (sData && sData.candidateName && isSameCandidate(sData.candidateName, c.fullName)) {
-                      assignedSlot = sId;
-                      break;
-                    }
-                  }
-                  return {
-                    ...c,
-                    assignedSlotId: assignedSlot || c.assignedSlotId || ""
-                  };
-                });
-                return updatedPool;
-              });
-            }
-
-            // 2. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot เพื่อให้ User ทุกคนเห็นตรงกันเสมอ
-            setRequests(prevRequests => {
-              let baseList = [...prevRequests];
-              if (remoteRequisitions.length > 0) {
-                const existingMap = new Map();
-                prevRequests.forEach(r => existingMap.set(r.id, r));
-
-                baseList = remoteRequisitions.map(remReq => {
-                  const existing = existingMap.get(remReq.id);
-                  const headcount = Math.max(1, Number(remReq.headcountRequired) || 1);
-                  
-                  let slots = existing?.slots && existing.slots.length > 0 
-                    ? [...existing.slots] 
-                    : Array.from({ length: headcount }, (_, i) => ({
-                        slotId: `${remReq.id}-${i + 1}`,
-                        slotIndex: i + 1,
-                        slotStatus: remReq.requestStatus || "PENDING_ADMIN",
-                        workflowStatus: remReq.workflowStatus || "PENDING_ADMIN",
-                        stage: remReq.stage || "received",
-                        candidateName: remReq.candidateName || "",
-                        candidatePhone: remReq.candidatePhone || "",
-                        resumeUrl: remReq.driveUrl || "",
-                        driveUrl: remReq.driveUrl || "",
-                        evaluations: []
-                      }));
-
-                  return {
-                    ...remReq,
-                    slots,
-                    ...(existing || {})
-                  };
-                });
-              }
-
-              return baseList.map(r => {
-                const mainId = r.id;
-                const cleanId = String(mainId).replace(/-\d+$/, "");
-                const remoteWfItem = serverStatuses[mainId] || serverStatuses[cleanId];
-
-                const updatedSlots = (r.slots || []).map(s => {
-                  const stageOverride = slotStages[s.slotId] || slotStages[mainId];
-                  const itAckFromRemote = Boolean(itConfirmedSlots[s.slotId] || itConfirmedSlots[mainId]);
-                  const remoteEvals = evalsMap[s.slotId] || [];
-
-                  // ตรวจสอบการลบถาวร
-                  if (stageOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
-                    return null;
-                  }
-
-                  const newWfStatus = remoteWfItem?.status || stageOverride?.slotStatus || s.workflowStatus;
-                  const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(stageOverride?.itEquipmentConfirmed);
-                  
-                  // สเตจจริงจากเซิร์ฟเวอร์กลาง: หาก Admin ย้ายไป interview หน้าต่าง User อื่นจะเปลี่ยนเป็น interview ทันที
-                  const effectiveStage = stageOverride?.stage || (newWfStatus === "READY_FOR_RECRUITMENT" && s.stage === "received" ? "manpower" : s.stage);
-
-                  return {
-                    ...s,
-                    jobTitle: stageOverride?.jobTitle || s.jobTitle,
-                    workflowStatus: newWfStatus || s.workflowStatus,
-                    slotStatus: stageOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
-                    stage: effectiveStage,
-                    priority: stageOverride?.priority || s.priority || "NORMAL",
-                    candidateName: stageOverride?.candidateName !== undefined ? stageOverride.candidateName : s.candidateName,
-                    candidatePhone: stageOverride?.candidatePhone !== undefined ? stageOverride.candidatePhone : s.candidatePhone,
-                    candidateNickname: stageOverride?.candidateNickname !== undefined ? stageOverride.candidateNickname : s.candidateNickname,
-                    resumeUrl: stageOverride?.resumeUrl || s.resumeUrl,
-                    driveUrl: stageOverride?.resumeUrl || s.driveUrl,
-                    interviewSchedule: stageOverride?.interviewSchedule !== undefined ? stageOverride.interviewSchedule : s.interviewSchedule,
-                    googleMeetUrl: stageOverride?.googleMeetUrl !== undefined ? stageOverride.googleMeetUrl : s.googleMeetUrl,
-                    hireDate: stageOverride?.hireDate !== undefined ? stageOverride.hireDate : s.hireDate,
-                    rejectionReason: stageOverride?.rejectionReason !== undefined ? stageOverride.rejectionReason : s.rejectionReason,
-                    onboardingArrivalStatus: stageOverride?.onboardingArrivalStatus || s.onboardingArrivalStatus || "pending_arrival",
-                    hasAttendedFirstDayTraining: stageOverride?.hasAttendedFirstDayTraining !== undefined ? stageOverride.hasAttendedFirstDayTraining : s.hasAttendedFirstDayTraining,
-                    itEquipmentConfirmed: isItConfirmed,
-                    isItNotified: isItConfirmed ? true : Boolean(stageOverride?.isItNotified || s.isItNotified),
-                    isArchivedFromKanban: stageOverride?.isArchivedFromKanban !== undefined ? Boolean(stageOverride.isArchivedFromKanban) : Boolean(s.isArchivedFromKanban),
-                    evaluations: remoteEvals.length > 0 ? remoteEvals : (s.evaluations || [])
-                  };
-                }).filter(Boolean);
-
-                const newStatus = remoteWfItem?.status;
-                return {
-                  ...r,
-                  requestStatus: newStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : (newStatus || r.requestStatus),
-                  workflowStatus: newStatus || r.workflowStatus,
-                  slots: updatedSlots
-                };
-              });
-            });
-
-            setSelectedDetailSlot(prevSlot => {
-              if (!prevSlot) return null;
-              const stageOverride = slotStages[prevSlot.slotId];
-              const itAck = Boolean(itConfirmedSlots[prevSlot.slotId] || itConfirmedSlots[prevSlot.parentRequestId]);
-              const remoteEvals = evalsMap[prevSlot.slotId];
-
-              if (stageOverride || itAck || remoteEvals) {
-                return {
-                  ...prevSlot,
-                  ...(stageOverride || {}),
-                  itEquipmentConfirmed: itAck || prevSlot.itEquipmentConfirmed,
-                  evaluations: remoteEvals || prevSlot.evaluations || []
-                };
-              }
-              return prevSlot;
-            });
-
-            if (!silent) {
-              triggerToast("✅ ซิงค์ข้อมูลกลาง (Central Hub) เรียบร้อยแล้ว!");
-            }
-          }
-        } catch (err) {
-          if (!silent) {
-            triggerToast("⚠️ ไม่สามารถซิงค์สถานะได้ (ตรวจสอบ Web App URL)");
-          }
-        }
-      };
-
-      // ดึงข้อมูลคำขอกำลังคนโดยตรงจากแผ่นงาน Google Sheet GID 1528284561
-      const syncRequisitionsFromGoogleSheet = async (showToast = false) => {
-        try {
-          const res = await fetch(GOOGLE_SHEET_MANPOWER_CSV_URL);
-          if (!res.ok) throw new Error("Network error");
-          const csvText = await res.text();
-          const rows = parseCSVText(csvText);
-
-          if (rows.length > 1) {
-            const parsedList = [];
-            for (let i = 1; i < rows.length; i++) {
-              const r = rows[i];
-              if (!r || r.length < 2) continue;
-              const reqId = (r[0] || "").trim();
-              if (!reqId || reqId.toLowerCase().includes("request")) continue;
-
-              const headcount = Math.max(1, parseInt(r[11], 10) || 1);
-              const driveUrl = (r[32] || "").trim();
-              const candName = (r[30] || "").trim();
-              const candPhone = (r[31] || "").trim();
-
-              const slots = Array.from({ length: headcount }, (_, idx) => ({
-                slotId: `${reqId}-${idx + 1}`,
-                slotIndex: idx + 1,
-                slotStatus: r[28] || "PENDING_ADMIN",
-                workflowStatus: r[28] || "PENDING_ADMIN",
-                stage: "received",
-                candidateName: candName,
-                candidatePhone: candPhone,
-                resumeUrl: driveUrl,
-                driveUrl: driveUrl,
-                evaluations: []
-              }));
-
-              parsedList.push({
-                id: reqId,
-                requestDate: (r[1] || "").trim(),
-                requesterName: (r[2] || "").trim(),
-                requesterPosition: (r[3] || "").trim(),
-                requesterEmail: (r[4] || "").trim(),
-                department: (r[5] || "-").trim(),
-                division: (r[6] || "-").trim(),
-                candidateSupervisor: (r[7] || "-").trim(),
-                approverName: (r[8] || "ศรัณย์ภัทธ อุบล").trim(),
-                approverEmail: (r[9] || "sarunpat.ub@valuesourcing.co").trim(),
-                jobTitle: (r[10] || "").trim(),
-                headcountRequired: headcount,
-                positionType: (r[12] || "Replacement").trim(),
-                replacedEmployeeName: (r[13] || "").trim(),
-                targetDate: (r[14] || "").trim(),
-                buddy: (r[15] || "").trim(),
-                workLocation: (r[16] || "Dusit Central Park").trim(),
-                gender: (r[17] || "ไม่ระบุ").trim(),
-                age: (r[18] || "ไม่จำกัด").trim(),
-                educationLevel: (r[19] || "ปริญญาตรี").trim(),
-                major: (r[20] || "-").trim(),
-                experience: (r[21] || "1-3 ปี").trim(),
-                mustHaveQualifications: (r[22] || "-").trim(),
-                jobDescription: (r[23] || "-").trim(),
-                itLaptop: (r[24] || "ต้องการ").trim(),
-                itSimCard: (r[25] || "ไม่ต้องการ").trim(),
-                itEmail: (r[26] || "ต้องการ").trim(),
-                itNetsuite: (r[27] || "ไม่ต้องการ").trim(),
-                requestStatus: (r[28] || "PENDING_ADMIN").trim(),
-                workflowStatus: (r[28] || "PENDING_ADMIN").trim(),
-                lastUpdated: (r[29] || "").trim(),
-                candidateName: candName,
-                candidatePhone: candPhone,
-                driveUrl: driveUrl,
-                resumeUrl: driveUrl,
-                slots: slots
-              });
-            }
-
-            if (parsedList.length > 0) {
-              setRequests(prev => {
-                const map = new Map();
-                parsedList.forEach(item => map.set(item.id, item));
-                prev.forEach(item => {
-                  if (map.has(item.id)) {
-                    map.set(item.id, { ...map.get(item.id), ...item });
-                  } else {
-                    map.set(item.id, item);
-                  }
-                });
-                return Array.from(map.values());
-              });
-              if (showToast) triggerToast(`ซิงค์ Requisitions จาก Google Sheet สำเร็จ (${parsedList.length} รายการ)`);
-            }
-          }
-        } catch (e) {
-          if (showToast) triggerToast("เชื่อมต่อข้อมูลชีทล้มเหลว");
-        }
-      };
-
-      // Auto-Polling every 5 seconds and sync on window focus (Centralized Real-Time Sync)
-      useEffect(() => {
-        syncWorkflowStatus(true);
-        syncRequisitionsFromGoogleSheet(false);
-        syncCandidatesFromGoogleSheet(false);
-
-        const pollingInterval = setInterval(() => {
-          syncWorkflowStatus(true);
-          syncRequisitionsFromGoogleSheet(false);
-          syncCandidatesFromGoogleSheet(false);
-        }, 5000);
-
-        const handleWindowFocus = () => {
-          syncWorkflowStatus(true);
-          syncRequisitionsFromGoogleSheet(false);
-          syncCandidatesFromGoogleSheet(false);
-        };
-
-        window.addEventListener("focus", handleWindowFocus);
-
-        return () => {
-          clearInterval(pollingInterval);
-          window.removeEventListener("focus", handleWindowFocus);
-        };
-      }, [googleScriptUrl]);
-
-      // 🔐 Production Google Authentication & User Profile State
-      // Ready for production: Auto-login removed. User must authenticate with corporate Google account.
+      // Corporate Authentication & User Session State
       const [currentUser, setCurrentUser] = useState(() => {
         const savedSession = localStorage.getItem("vs_corporate_auth_token_v2");
         if (savedSession) {
@@ -1091,7 +773,7 @@
             }
           } catch (e) {}
         }
-        return null; // Production: Start at secure login gate screen
+        return null;
       });
 
       const [currentView, setCurrentView] = useState("admin");
@@ -1103,7 +785,6 @@
 
       const isAdminAuthenticated = Boolean(currentUser && (currentUser.isAdmin || currentUser.isSuperAdmin));
 
-      // 🔒 สิทธิ์การมองเห็น: หากไม่ใช่แอดมิน ให้ล็อกหน้าจอให้อยู่ที่กระดาน Kanban Pipeline เท่านั้น
       useEffect(() => {
         if (!isAdminAuthenticated) {
           setAdminSubTab("kanban");
@@ -1111,7 +792,100 @@
         }
       }, [isAdminAuthenticated]);
 
-      // Handle Google Sign-in Callback from GIS SDK
+      const [searchQuery, setSearchQuery] = useState("");
+      const [candidateSearchQuery, setCandidateSearchQuery] = useState("");
+      const [candidatePositionFilter, setCandidatePositionFilter] = useState("ALL");
+      const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
+
+      // Admin Requisitions Queue Filters & Modals
+      const [reqQueueFilter, setReqQueueFilter] = useState("ALL");
+      const [reqQueueSearch, setReqQueueSearch] = useState("");
+      const [selectedRequisitionDetail, setSelectedRequisitionDetail] = useState(null);
+      const [showRejectModal, setShowRejectModal] = useState(false);
+      const [rejectionNoteInput, setRejectionNoteInput] = useState("");
+      const [isApprovingEmailSending, setIsApprovingEmailSending] = useState(false);
+
+      // Department Demand & Statistics
+      const [selectedMonthFilter, setSelectedMonthFilter] = useState("ALL");
+      const [selectedYearFilter, setSelectedYearFilter] = useState("ALL");
+      const [selectedDepartmentDetail, setSelectedDepartmentDetail] = useState(null);
+
+      // Requisition Creation & Confirmation
+      const [showRequestModal, setShowRequestModal] = useState(false);
+      const [showConfirmModal, setShowConfirmModal] = useState(false);
+      const [pendingConfirmationForm, setPendingConfirmationForm] = useState(null);
+      const [showAdminReviewModal, setShowAdminReviewModal] = useState(false);
+      const [selectedAdminReviewSlot, setSelectedAdminReviewSlot] = useState(null);
+
+      // Candidate Pool & Card Actions
+      const [showAddCandidateModal, setShowAddCandidateModal] = useState(false);
+      const [selectedDetailSlot, setSelectedDetailSlot] = useState(null);
+      const [slotPickerCandidate, setSlotPickerCandidate] = useState(null);
+      const [selectedCandidateDetail, setSelectedCandidateDetail] = useState(null);
+      const [isEditingCandidate, setIsEditingCandidate] = useState(false);
+      const [candidateEditForm, setCandidateEditForm] = useState(null);
+      const [candidateToDelete, setCandidateToDelete] = useState(null);
+
+      // In-line Title Editing
+      const [editingCardTitleSlotId, setEditingCardTitleSlotId] = useState(null);
+      const [editingCardTitleValue, setEditingCardTitleValue] = useState("");
+      const [isModalEditingTitle, setIsModalEditingTitle] = useState(false);
+      const [modalEditTitleValue, setModalEditTitleValue] = useState("");
+
+      // Position Slot Deletion
+      const [slotToDelete, setSlotToDelete] = useState(null);
+      const [deletionReasonInput, setDeletionReasonInput] = useState("");
+
+      // Interview Scheduling & Stage Gates
+      const [unassignedInterviewSlotModal, setUnassignedInterviewSlotModal] = useState(null);
+      const [scheduleAssignModalData, setScheduleAssignModalData] = useState(null);
+      const [scheduleInterviewDate, setScheduleInterviewDate] = useState("");
+      const [scheduleInterviewTime, setScheduleInterviewTime] = useState("10:00");
+      const [scheduleInterviewFormat, setScheduleInterviewFormat] = useState("Online (google Meet)");
+      const [scheduleGoogleMeetUrl, setScheduleGoogleMeetUrl] = useState("");
+
+      const [onboardModalData, setOnboardModalData] = useState(null);
+      const [onboardHireDateInput, setOnboardHireDateInput] = useState("");
+      const [rejectionModalData, setRejectionModalData] = useState(null);
+      const [rejectionReasonInput, setRejectionReasonInput] = useState("");
+
+      // Blind Evaluation & Audit
+      const [blindEvalModalSlot, setBlindEvalModalSlot] = useState(null);
+      const [blindEvalForm, setBlindEvalForm] = useState({
+        evaluatorName: "",
+        evaluatorRole: EVALUATOR_ROLES[0],
+        date: new Date().toISOString().split('T')[0],
+        scores: { c1: 4, c2: 4, c3: 4, c4: 4, c5: 4 },
+        strengths: "",
+        improvements: "",
+        recommendation: "Recommend to Hire"
+      });
+
+      const [adminAuditSlot, setAdminAuditSlot] = useState(null);
+      const [unassignConfirmTarget, setUnassignConfirmTarget] = useState(null);
+      const [toastMessage, setToastMessage] = useState("");
+
+      const [showSheetsModal, setShowSheetsModal] = useState(false);
+      const [scriptUrlInput, setScriptUrlInput] = useState(() => googleScriptUrl);
+      const [stageClearModal, setStageClearModal] = useState(null);
+      const [selectedSlotsToClear, setSelectedSlotsToClear] = useState([]);
+      const [draggedSlotId, setDraggedSlotId] = useState(null);
+      const [dragOverStage, setDragOverStage] = useState(null);
+
+      const triggerToast = (msg) => {
+        setToastMessage(msg);
+        setTimeout(() => setToastMessage(""), 3500);
+      };
+
+      const handleUserLogout = () => {
+        localStorage.removeItem("vs_corporate_auth_token_v2");
+        setCurrentUser(null);
+        if (window.google && window.google.accounts && window.google.accounts.id) {
+          window.google.accounts.id.disableAutoSelect();
+        }
+        triggerToast("ออกจากระบบเรียบร้อย (Logged out)");
+      };
+
       const handleGoogleCredentialResponse = (response) => {
         try {
           setLoginError("");
@@ -1119,21 +893,16 @@
             setLoginError("ไม่พบข้อมูลการยืนยันตัวตนจาก Google กรุณาลองใหม่อีกครั้ง");
             return;
           }
-
           const decoded = decodeGoogleCredential(response.credential);
           if (!decoded || !decoded.email) {
             setLoginError("ไม่สามารถถอดรหัสข้อมูลบัญชี Google ได้");
             return;
           }
-
           const userEmail = decoded.email.trim().toLowerCase();
-
-          // 🔒 ตรวจสอบโดเมน @valuesourcing.co
           if (!userEmail.endsWith(ALLOWED_CORPORATE_DOMAIN)) {
             setLoginError(`❌ สิทธิ์ถูกปฏิเสธ: อนุญาตเฉพาะบัญชีอีเมล ${ALLOWED_CORPORATE_DOMAIN} เท่านั้น (${userEmail})`);
             return;
           }
-
           const roleInfo = getUserRoleInfo(userEmail);
           const userProfile = {
             email: userEmail,
@@ -1142,29 +911,17 @@
             token: response.credential,
             ...roleInfo
           };
-
-          // บันทึก Session ลง LocalStorage
           localStorage.setItem("vs_corporate_auth_token_v2", JSON.stringify(userProfile));
           setCurrentUser(userProfile);
           setShowLoginModal(false);
-          setCurrentView("admin");
-
-          if (roleInfo.isAdmin) {
-            triggerToast(`👋 เข้าสู่ระบบสำเร็จ: ${userProfile.name} [${roleInfo.shortLabel}]`);
-          } else {
-            setAdminSubTab("kanban");
-            triggerToast(`👋 เข้าสู่ระบบสำเร็จ: ${userProfile.name} (โหมดกระดานสรรหาและร่วมประเมิน)`);
-          }
+          triggerToast(`👋 เข้าสู่ระบบสำเร็จ: ${userProfile.name}`);
         } catch (err) {
-          console.error("Google Sign-In Error:", err);
           setLoginError("เกิดข้อผิดพลาดในการประมวลผลการเข้าสู่ระบบ: " + err.message);
         }
       };
 
-      // Initialize Google Identity Services (GIS) Button
-      const initGoogleSignIn = (targetId = "googleSignInBtnContainer") => {
+      const initGoogleSignIn = (targetId = "gateGoogleSignInBtn") => {
         if (typeof window === "undefined") return;
-
         if (window.google && window.google.accounts && window.google.accounts.id) {
           try {
             window.google.accounts.id.initialize({
@@ -1173,8 +930,7 @@
               auto_select: false,
               cancel_on_tap_outside: true
             });
-
-            const containers = [targetId, "googleSignInBtnContainer", "gateGoogleSignInBtn"];
+            const containers = [targetId, "gateGoogleSignInBtn", "googleSignInBtnContainer"];
             containers.forEach(id => {
               const el = document.getElementById(id);
               if (el) {
@@ -1195,7 +951,6 @@
         }
       };
 
-      // Ensure GIS button renders on Gate Screen when user is not logged in
       useEffect(() => {
         if (!currentUser) {
           const tryInit = () => {
@@ -1208,93 +963,6 @@
           tryInit();
         }
       }, [currentUser]);
-
-      // Trigger GSI initialization whenever Login Modal opens
-      useEffect(() => {
-        if (showLoginModal) {
-          setIsGsiLoading(true);
-          const timer = setTimeout(() => {
-            initGoogleSignIn("googleSignInBtnContainer");
-            setIsGsiLoading(false);
-          }, 300);
-          return () => clearTimeout(timer);
-        }
-      }, [showLoginModal]);
-
-      // Quick Switch Account Helper (for development/testing)
-      const handleSwitchAccount = (email) => {
-        const roleInfo = getUserRoleInfo(email);
-        const userProfile = {
-          email: email,
-          name: email.split('@')[0],
-          picture: "",
-          ...roleInfo
-        };
-        localStorage.setItem("vs_corporate_auth_token_v2", JSON.stringify(userProfile));
-        setCurrentUser(userProfile);
-        setShowLoginModal(false);
-        setLoginError("");
-        if (roleInfo.isAdmin) {
-          setCurrentView("admin");
-        } else {
-          setCurrentView("public");
-        }
-        triggerToast(`สลับบัญชีเป็น: ${email} (${roleInfo.shortLabel})`);
-      };
-
-      const handleUserLogout = () => {
-        localStorage.removeItem("vs_corporate_auth_token_v2");
-        setCurrentUser(null);
-        setCurrentView("public");
-        if (window.google && window.google.accounts && window.google.accounts.id) {
-          window.google.accounts.id.disableAutoSelect();
-        }
-        triggerToast("ออกจากระบบเรียบร้อย (Logged out)");
-      };
-
-      const [searchQuery, setSearchQuery] = useState("");
-      const [candidateSearchQuery, setCandidateSearchQuery] = useState("");
-      const [candidatePositionFilter, setCandidatePositionFilter] = useState("ALL");
-      const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
-
-      // Admin Requisitions Queue Filters & Slide-over Detail Modal
-      const [reqQueueFilter, setReqQueueFilter] = useState("ALL");
-      const [reqQueueSearch, setReqQueueSearch] = useState("");
-      const [selectedRequisitionDetail, setSelectedRequisitionDetail] = useState(null);
-      const [showRejectModal, setShowRejectModal] = useState(false);
-      const [rejectionNoteInput, setRejectionNoteInput] = useState("");
-      const [isApprovingEmailSending, setIsApprovingEmailSending] = useState(false);
-
-      // Department Demand Filtering & Modals
-      const [selectedMonthFilter, setSelectedMonthFilter] = useState("ALL");
-      const [selectedYearFilter, setSelectedYearFilter] = useState("ALL");
-      const [selectedDepartmentDetail, setSelectedDepartmentDetail] = useState(null);
-
-      const [showRequestModal, setShowRequestModal] = useState(false);
-      const [showConfirmModal, setShowConfirmModal] = useState(false);
-      const [pendingConfirmationForm, setPendingConfirmationForm] = useState(null);
-      const [showAdminReviewModal, setShowAdminReviewModal] = useState(false);
-      const [selectedAdminReviewSlot, setSelectedAdminReviewSlot] = useState(null);
-
-      const [showAddCandidateModal, setShowAddCandidateModal] = useState(false);
-      const [selectedDetailSlot, setSelectedDetailSlot] = useState(null);
-      const [slotPickerCandidate, setSlotPickerCandidate] = useState(null);
-      
-      // Candidate Detail Modal & Candidate Delete Modal states
-      const [selectedCandidateDetail, setSelectedCandidateDetail] = useState(null);
-      const [isEditingCandidate, setIsEditingCandidate] = useState(false);
-      const [candidateEditForm, setCandidateEditForm] = useState(null);
-      const [candidateToDelete, setCandidateToDelete] = useState(null);
-
-      // Inline and Modal Job Title Editing States
-      const [editingCardTitleSlotId, setEditingCardTitleSlotId] = useState(null);
-      const [editingCardTitleValue, setEditingCardTitleValue] = useState("");
-      const [isModalEditingTitle, setIsModalEditingTitle] = useState(false);
-      const [modalEditTitleValue, setModalEditTitleValue] = useState("");
-
-      // Admin Slot Deletion Modal State
-      const [slotToDelete, setSlotToDelete] = useState(null);
-      const [deletionReasonInput, setDeletionReasonInput] = useState("");
 
       const handleOpenCandidateDetail = (cand) => {
         setSelectedCandidateDetail(cand);
@@ -1311,17 +979,15 @@
 
         const resolvedDrive = String(candidateEditForm.resumeUrl || candidateEditForm.driveUrl || "").trim();
         const updatedCand = { 
-          ...candidateEditForm,
+          ...candidateEditForm, 
           resumeUrl: resolvedDrive,
-          driveUrl: resolvedDrive
+          driveUrl: resolvedDrive 
         };
 
-        // Update local Candidate Pool state
         setCandidatePool(prev => prev.map(c => 
           c.candidateId === updatedCand.candidateId ? updatedCand : c
         ));
 
-        // Sync candidate name and phone to mapped slots if any
         if (updatedCand.assignedSlotId) {
           setRequests(prev => prev.map(r => {
             if (!r.slots) return r;
@@ -1340,15 +1006,6 @@
             });
             return { ...r, slots };
           }));
-
-          // 🔄 ส่งข้อมูล Candidate ที่แก้ไขไปยังศูนย์กลางเพื่อให้ User ทุกคนเห็นทันที
-          sendCentralSlotStageUpdate(updatedCand.assignedSlotId, {
-            candidateName: updatedCand.fullName,
-            candidateNickname: updatedCand.nickname,
-            candidatePhone: updatedCand.phone,
-            resumeUrl: resolvedDrive,
-            hireDate: updatedCand.hireDate || undefined
-          });
         }
 
         setSelectedCandidateDetail(updatedCand);
@@ -1366,80 +1023,12 @@
                 candidate: updatedCand
               })
             });
-
-            // 🔄 ซิงค์ชื่อและลิงก์ Drive ไปยังแผ่นงานแบบขอกำลังคน (GID 1528284561)
-            if (updatedCand.assignedSlotId) {
-              await syncSlotToManpowerSheet({
-                slotId: updatedCand.assignedSlotId,
-                candidateName: updatedCand.fullName,
-                candidatePhone: updatedCand.phone,
-                resumeUrl: resolvedDrive
-              }, true);
-            }
-
-            // 🔄 หาก Candidate รายนี้อยู่ในสถานะ Closed หรือ Onboarded ให้ส่งลิงก์ Drive ไปอัปเดตชีท Closed (GID 396528947) ทันที
-            const matchingSlot = allPositionSlots.find(s => 
-              s.slotId === updatedCand.assignedSlotId || 
-              (s.candidateName && isSameCandidate(s.candidateName, updatedCand.fullName))
-            );
-            if (matchingSlot && (matchingSlot.slotStatus === "Closed" || matchingSlot.stage === "onboarded" || matchingSlot.stage === "cancelled")) {
-              await syncSlotToClosedSheet({
-                ...matchingSlot,
-                candidateName: updatedCand.fullName,
-                candidatePhone: updatedCand.phone,
-                resumeUrl: resolvedDrive
-              }, true);
-            }
-
-            triggerToast(`บันทึกการแก้ไขคุณ ${updatedCand.fullName} สำเร็จ & ซิงค์ลง Google Sheet เรียบร้อย!`);
-          } else {
-            triggerToast(`บันทึกการแก้ไขคุณ ${updatedCand.fullName} สำเร็จ!`);
           }
+          triggerToast(`บันทึกการแก้ไขคุณ ${updatedCand.fullName} เรียบร้อย!`);
         } catch (err) {
-          triggerToast(`บันทึกการแก้ไขคุณ ${updatedCand.fullName} สำเร็จ (แคชออฟไลน์)`);
+          triggerToast(`บันทึกการแก้ไขคุณ ${updatedCand.fullName} เรียบร้อย (แคช)`);
         }
       };
-      
-      // Mandatory Check: Interview Stage assignment for unassigned slots
-      const [unassignedInterviewSlotModal, setUnassignedInterviewSlotModal] = useState(null);
-      
-      const [scheduleAssignModalData, setScheduleAssignModalData] = useState(null);
-      const [scheduleInterviewDate, setScheduleInterviewDate] = useState("");
-      const [scheduleInterviewTime, setScheduleInterviewTime] = useState("10:00");
-      const [scheduleInterviewFormat, setScheduleInterviewFormat] = useState("Online (google Meet)");
-      const [scheduleGoogleMeetUrl, setScheduleGoogleMeetUrl] = useState("");
-
-      // Onboarded Hire Date Trigger Modal
-      const [onboardModalData, setOnboardModalData] = useState(null);
-      const [onboardHireDateInput, setOnboardHireDateInput] = useState("");
-
-      // Rejection / Decline Modal (Mandatory Reason)
-      const [rejectionModalData, setRejectionModalData] = useState(null);
-      const [rejectionReasonInput, setRejectionReasonInput] = useState("");
-
-      // Blind Evaluation Modal
-      const [blindEvalModalSlot, setBlindEvalModalSlot] = useState(null);
-      const [blindEvalForm, setBlindEvalForm] = useState({
-        evaluatorName: "",
-        evaluatorRole: EVALUATOR_ROLES[0],
-        date: new Date().toISOString().split('T')[0],
-        scores: { c1: 4, c2: 4, c3: 4, c4: 4, c5: 4 },
-        strengths: "",
-        improvements: "",
-        recommendation: "Recommend to Hire"
-      });
-
-      const [adminAuditSlot, setAdminAuditSlot] = useState(null);
-      const [unassignConfirmTarget, setUnassignConfirmTarget] = useState(null);
-      const [toastMessage, setToastMessage] = useState("");
-
-      // Google Apps Script Setup Modal State
-      const [showSheetsModal, setShowSheetsModal] = useState(false);
-      const [scriptUrlInput, setScriptUrlInput] = useState(() => googleScriptUrl);
-
-      // Stage Header Multi-Select Clear Modal State
-      const [stageClearModal, setStageClearModal] = useState(null);
-      const [selectedSlotsToClear, setSelectedSlotsToClear] = useState([]);
 
       const handleOpenStageClearModal = (stageId, stageLabel) => {
         const slotsInStage = allPositionSlots.filter(s => s.stage === stageId && !s.isArchivedFromKanban);
@@ -1452,67 +1041,36 @@
       };
 
       const handleConfirmBatchArchive = () => {
-        if (!stageClearModal || selectedSlotsToClear.length === 0) {
-          triggerToast("⚠️ กรุณาเลือกอย่างน้อย 1 รายการเพื่อล้าง");
-          return;
-        }
+        if (!stageClearModal || selectedSlotsToClear.length === 0) return;
         const clearSet = new Set(selectedSlotsToClear);
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
-          const slots = r.slots.map(s => {
-            if (clearSet.has(s.slotId)) {
-              return { ...s, isArchivedFromKanban: true };
-            }
-            return s;
-          });
+          const slots = r.slots.map(s => clearSet.has(s.slotId) ? { ...s, isArchivedFromKanban: true } : s);
           return { ...r, slots };
         }));
-
-        // 🔄 ส่งคำสั่งซ่อนการ์ดไปยังศูนย์กลางเพื่อให้ User ทุกคนเห็นเหมือนกัน
-        selectedSlotsToClear.forEach(id => {
-          sendCentralSlotStageUpdate(id, { isArchivedFromKanban: true });
-        });
-
-        triggerToast(`🧹 ซ่อนการ์ด ${selectedSlotsToClear.length} รายการออกจาก Kanban เรียบร้อย (ข้อมูลยังคงถูกบันทึกใน Manpower Request ครบถ้วน)`);
+        triggerToast(`ซ่อนการ์ด ${selectedSlotsToClear.length} รายการออกจาก Kanban เรียบร้อย`);
         setStageClearModal(null);
         setSelectedSlotsToClear([]);
       };
 
-      // Handler to clear / hide card from Kanban while keeping all records in Manpower Request
       const handleArchiveSlotFromKanban = (slotId) => {
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
-          const slots = r.slots.map(s => {
-            if (s.slotId === slotId) {
-              return { ...s, isArchivedFromKanban: true };
-            }
-            return s;
-          });
+          const slots = r.slots.map(s => s.slotId === slotId ? { ...s, isArchivedFromKanban: true } : s);
           return { ...r, slots };
         }));
-
-        // 🔄 ส่งคำสั่งซ่อนการ์ดไปยังศูนย์กลาง
-        sendCentralSlotStageUpdate(slotId, { isArchivedFromKanban: true });
-        triggerToast(`ซ่อนการ์ด Slot #${slotId} ออกจาก Kanban เรียบร้อย (ข้อมูลยังคงถูกบันทึกใน Manpower Request ครบถ้วน)`);
+        triggerToast(`ซ่อนการ์ด Slot #${slotId} ออกจาก Kanban เรียบร้อย`);
       };
 
-      // Handler to restore all hidden Kanban cards if needed
       const handleRestoreAllArchivedCards = () => {
         setRequests(prev => prev.map(r => {
           if (!r.slots) return r;
           const slots = r.slots.map(s => ({ ...s, isArchivedFromKanban: false }));
           return { ...r, slots };
         }));
-
-        allPositionSlots.filter(s => s.isArchivedFromKanban).forEach(s => {
-          sendCentralSlotStageUpdate(s.slotId, { isArchivedFromKanban: false });
-        });
-
         triggerToast("กู้คืนการ์ดทั้งหมดกลับมาแสดงบน Kanban เรียบร้อย");
       };
 
-      const [draggedSlotId, setDraggedSlotId] = useState(null);
-      const [dragOverStage, setDragOverStage] = useState(null);
       const handleDragStart = (e, slotId) => {
         setDraggedSlotId(slotId);
         e.dataTransfer.setData("text/plain", slotId);
@@ -1522,16 +1080,12 @@
       const handleDragOver = (e, stageId) => {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
-        if (dragOverStage !== stageId) {
-          setDragOverStage(stageId);
-        }
+        if (dragOverStage !== stageId) setDragOverStage(stageId);
       };
 
       const handleDragLeave = (e, stageId) => {
         if (e.currentTarget.contains(e.relatedTarget)) return;
-        if (dragOverStage === stageId) {
-          setDragOverStage(null);
-        }
+        if (dragOverStage === stageId) setDragOverStage(null);
       };
 
       const handleDrop = (e, targetStage) => {
@@ -1540,80 +1094,92 @@
         setDragOverStage(null);
         setDraggedSlotId(null);
         if (!slotId) return;
-
         handleInitiateStageChange(slotId, targetStage);
       };
 
-      const triggerToast = (msg) => {
-        setToastMessage(msg);
-        setTimeout(() => setToastMessage(""), 3500);
+      const syncCandidatesFromGoogleSheet = async (showToast = false) => {
+        try {
+          const res = await fetch(GOOGLE_SHEET_CANDIDATES_CSV_URL);
+          if (!res.ok) return;
+          const csvText = await res.text();
+          const rows = parseCSVText(csvText);
+          if (rows.length > 1) {
+            const loaded = [];
+            for (let i = 1; i < rows.length; i++) {
+              const r = rows[i];
+              if (!r || r.length < 2) continue;
+              const fullName = (r[3] || '').trim();
+              if (!fullName || fullName.includes("ชื่อ")) continue;
+              const existingCand = candidatePool.find(c => isSameCandidate(c.fullName, fullName));
+              loaded.push({
+                no: r[0] ? r[0].trim() : i,
+                year: r[1] ? r[1].trim() : "2026",
+                month: r[2] ? r[2].trim() : "08",
+                candidateId: `CAND-2026-${String(i).padStart(3, '0')}`,
+                fullName,
+                nickname: r[4] ? r[4].trim() : "",
+                phone: r[5] ? r[5].trim() : "",
+                targetJobTitle: r[6] ? r[6].trim() : "General Application",
+                level: r[7] ? r[7].trim() : "Officer",
+                branch: r[8] ? r[8].trim() : "-",
+                type: r[9] ? r[9].trim() : "Full-Time",
+                mbti: r[10] ? r[10].trim() : "-",
+                prescreenDate: r[11] ? r[11].trim() : "",
+                resumeConfirmDate: r[12] ? r[12].trim() : "",
+                interviewDate: r[13] ? r[13].trim() : "",
+                hireDate: r[14] ? r[14].trim() : "",
+                status: r[15] ? r[15].trim() : "Pending",
+                source: r[16] ? r[16].trim() : "LinkedIn",
+                remark: r[17] ? r[17].trim() : "",
+                resumeUrl: r[18] ? r[18].trim() : (existingCand?.resumeUrl || ""),
+                assignedSlotId: existingCand?.assignedSlotId || ""
+              });
+            }
+            if (loaded.length > 0) {
+              setCandidatePool(loaded);
+              if (showToast) triggerToast(`ซิงค์ผู้สมัครสำเร็จ (${loaded.length} คน)`);
+            }
+          }
+        } catch (err) {}
       };
 
-      // Deep link verification token handler (Approver & IT Actions)
-      useEffect(() => {
-        const urlParams = new URLSearchParams(window.location.search);
-        const action = urlParams.get("action");
-        const token = urlParams.get("token");
-        const reqId = urlParams.get("reqId");
-        const slotId = urlParams.get("slotId");
-
-        if (action) {
-          if (action === "approve") {
-            setRequests(prev => prev.map(r => {
-              if (r.id === reqId || r.slots?.some(s => s.slotId === reqId)) {
-                const updatedSlots = (r.slots || []).map(s => ({
-                  ...s,
-                  slotStatus: "PENDING_IT",
-                  workflowStatus: "PENDING_IT",
-                  stage: "received"
-                }));
-                return {
-                  ...r,
-                  requestStatus: "PENDING_IT",
-                  workflowStatus: "PENDING_IT",
-                  stage: "received",
-                  slots: updatedSlots,
-                  lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
-                };
-              }
-              return r;
-            }));
-            triggerToast(`✅ ผู้อนุมัติยืนยันการสรรหา (${reqId}) เรียบร้อยแล้ว! ปรับสถานะเป็น PENDING_IT (รอ IT จัดเตรียมอุปกรณ์)`);
-            window.history.replaceState({}, document.title, window.location.pathname);
-          } else if (action === "it_confirm" || action === "it_ready" || action === "it_ack") {
-            setRequests(prev => prev.map(r => {
-              if (r.id === reqId || r.slots?.some(s => s.slotId === reqId || s.slotId === slotId)) {
-                const updatedSlots = (r.slots || []).map(s => {
-                  if (s.slotId === slotId || !slotId) {
-                    return {
-                      ...s,
-                      itEquipmentConfirmed: true,
-                      isItNotified: true
-                    };
-                  }
-                  return s;
-                });
-                return {
-                  ...r,
-                  slots: updatedSlots,
-                  lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
-                };
-              }
-              return r;
-            }));
-
-            setSelectedDetailSlot(prev => {
-              if (prev && (prev.slotId === slotId || prev.parentRequestId === reqId)) {
-                return { ...prev, itEquipmentConfirmed: true, isItNotified: true };
-              }
-              return prev;
-            });
-
-            triggerToast(`💻 ทีม IT กดยืนยันรับทราบอุปกรณ์เรียบร้อยแล้ว! อัปเดตสถานะเป็นสีเขียวทันที`);
-            window.history.replaceState({}, document.title, window.location.pathname);
+      const departmentOptions = useMemo(() => {
+        const set = new Set(DEPARTMENTS);
+        personnelList.forEach(p => {
+          if (p?.department && p.department !== "-" && p.department.trim()) {
+            set.add(p.department.trim());
           }
-        }
-      }, []);
+        });
+        return Array.from(set);
+      }, [personnelList]);
+
+      const requesterOptions = useMemo(() => {
+        return personnelList.map(p => ({
+          value: p.nameEn || p.name,
+          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
+        }));
+      }, [personnelList]);
+
+      const supervisorOptions = useMemo(() => {
+        return personnelList.map(p => ({
+          value: p.nameEn || p.name,
+          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
+        }));
+      }, [personnelList]);
+
+      const buddyOptions = useMemo(() => {
+        return personnelList.map(p => ({
+          value: p.nameEn || p.name,
+          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
+        }));
+      }, [personnelList]);
+
+      const evaluatorOptions = useMemo(() => {
+        return personnelList.map(p => ({
+          value: p.nameEn ? `${p.nameEn} (${p.name})` : p.name,
+          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
+        }));
+      }, [personnelList]);
 
       const initialForm = {
         requesterName: "",
@@ -1672,214 +1238,438 @@
       };
       const [newCandidateForm, setNewCandidateForm] = useState(initialCandidateForm);
 
-      // Automated Cascading Sync: If mapped slot is Closed or Onboarded, update candidate status to "Hiring / Offer"
+      // ดักฟังการอัปเดตแบบ Real-time ข้ามหน้าต่าง (BroadcastChannel)
       useEffect(() => {
-        let hasChanges = false;
-        const updatedPool = candidatePool.map(cand => {
-          if (!cand.assignedSlotId) return cand;
+        if (!syncBroadcastChannel) return;
+        const handleBroadcast = (event) => {
+          const msg = event.data;
+          if (!msg || !msg.type) return;
 
-          let linkedReq = null;
-          let linkedSlot = null;
-          for (const req of requests) {
-            if (req.slots) {
-              const sl = req.slots.find(s => s.slotId === cand.assignedSlotId);
-              if (sl) {
-                linkedReq = req;
-                linkedSlot = sl;
-                break;
-              }
-            }
-          }
-
-          if (linkedSlot) {
-            const isSlotClosed = linkedSlot.slotStatus === "Closed" || linkedSlot.stage === "onboarded" || linkedReq?.requestStatus === "Closed";
-            if (isSlotClosed && cand.status !== "Hiring / Offer") {
-              hasChanges = true;
-              return { ...cand, status: "Hiring / Offer" };
-            }
-          }
-          return cand;
-        });
-
-        if (hasChanges) {
-          setCandidatePool(updatedPool);
-        }
-      }, [requests]);
-
-      const syncPersonnelFromGoogleSheet = async (showToast = false) => {
-        try {
-          const res = await fetch(GOOGLE_SHEET_DIRECTORY_CSV_URL);
-          if (!res.ok) throw new Error("Network error");
-          const csvText = await res.text();
-          const rows = parseCSVText(csvText);
-
-          if (rows.length > 1) {
-            const header = rows[0].map(h => (h || '').toLowerCase().trim().replace(/\uFEFF/g, ''));
-            let nameIdx = header.findIndex(h => (h.includes('ชื่อ') || h.includes('name')) && !h.includes('เล่น') && !h.includes('en') && !h.includes('eng') && !h.includes('อังกฤษ'));
-            let nameEnIdx = header.findIndex(h => h.includes('en') || h.includes('eng') || h.includes('อังกฤษ') || (h.includes('name') && !h.includes('ไทย')));
-            let deptIdx = header.findIndex(h => h.includes('ฝ่ายงาน') || h.includes('ฝ่าย') || h.includes('แผนก') || h.includes('department'));
-            let divIdx = header.findIndex(h => h.includes('สายงาน') || h.includes('division'));
-            let posIdx = header.findIndex(h => h.includes('ตำแหน่ง') || h.includes('position'));
-            let emailIdx = header.findIndex(h => h.includes('email') || h.includes('อีเมล'));
-
-            if (nameIdx === -1) nameIdx = 0;
-
-            const loaded = [];
-            for (let i = 1; i < rows.length; i++) {
-              const r = rows[i];
-              if (!r || r.length <= 1) continue;
-              const nameVal = (nameIdx !== -1 && r[nameIdx]) ? r[nameIdx].trim() : (r[0] || '').trim();
-              if (!nameVal || nameVal.includes("ชื่อ")) continue;
-
-              const nameEnVal = (nameEnIdx !== -1 && r[nameEnIdx]) ? r[nameEnIdx].trim() : "";
-              const deptVal = (deptIdx !== -1 && r[deptIdx]) ? r[deptIdx].trim() : "-";
-              const divVal = (divIdx !== -1 && r[divIdx]) ? r[divIdx].trim() : "-";
-
-              loaded.push({
-                name: nameVal,
-                nameEn: nameEnVal || nameVal,
-                email: (emailIdx !== -1 ? r[emailIdx] : r.find(c => c && c.includes("@")))?.trim() || "",
-                position: (posIdx !== -1 ? r[posIdx] : r[1])?.trim() || "Staff",
-                department: deptVal,
-                division: divVal
+          if (msg.type === "SLOT_STAGE_UPDATE" && msg.slotId) {
+            setRequests(prev => prev.map(r => {
+              if (!r.slots) return r;
+              let hasMatch = false;
+              const slots = r.slots.map(s => {
+                if (s.slotId === msg.slotId) {
+                  hasMatch = true;
+                  return { ...s, ...msg.payload };
+                }
+                return s;
               });
-            }
+              if (hasMatch) {
+                return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
+              }
+              return r;
+            }));
 
-            if (loaded.length > 0) {
-              setPersonnelList(loaded);
-              localStorage.setItem("hr_personnel_v62", JSON.stringify(loaded));
-              if (showToast) triggerToast(`ซิงค์รายชื่อบุคลากรสำเร็จ (${loaded.length} คน)`);
+            // อัปเดต Candidate Pool
+            if (msg.payload?.candidateName) {
+              setCandidatePool(prev => prev.map(c => {
+                if (isSameCandidate(c.fullName, msg.payload.candidateName)) {
+                  return { ...c, assignedSlotId: msg.slotId };
+                }
+                return c;
+              }));
             }
+          } else if (msg.type === "EVALUATION_UPDATE" && msg.slotId) {
+            setRequests(prev => prev.map(r => {
+              if (!r.slots) return r;
+              const slots = r.slots.map(s => {
+                if (s.slotId === msg.slotId) {
+                  const updatedEvals = [...(s.evaluations || []), msg.evaluation];
+                  const overall = calculateOverallScore(updatedEvals);
+                  return {
+                    ...s,
+                    evaluations: updatedEvals,
+                    interviewScore: overall.combinedAvg,
+                    interviewScorePercent: overall.combinedPct,
+                    interviewResult: overall.result
+                  };
+                }
+                return s;
+              });
+              return { ...r, slots };
+            }));
+          } else if (msg.type === "TRIGGER_SYNC") {
+            syncWorkflowStatus(true);
           }
-        } catch (err) {
-          if (showToast) triggerToast("ใช้ออฟไลน์ข้อมูลแคชเดิม");
+        };
+
+        syncBroadcastChannel.addEventListener("message", handleBroadcast);
+        return () => {
+          syncBroadcastChannel.removeEventListener("message", handleBroadcast);
+        };
+      }, []);
+
+      // ฟังก์ชันส่งอัปเดตสเตจและสถานะของ Slot ไปยังศูนย์กลาง (Apps Script Backend)
+      const sendCentralSlotStageUpdate = async (slotId, stagePayload) => {
+        if (!slotId) return;
+
+        // 1. ส่งสัญญาณข้ามหน้าต่างทันที (0ms)
+        if (syncBroadcastChannel) {
+          try {
+            syncBroadcastChannel.postMessage({
+              type: "SLOT_STAGE_UPDATE",
+              slotId: slotId,
+              payload: stagePayload
+            });
+          } catch (e) {}
+        }
+
+        // 2. ส่งขึ้นเซิร์ฟเวอร์กลาง Google Apps Script
+        if (googleScriptUrl) {
+          try {
+            fetch(googleScriptUrl, {
+              method: "POST",
+              mode: "no-cors",
+              headers: { "Content-Type": "text/plain" },
+              body: JSON.stringify({
+                action: "updateSlotStage",
+                slotId: slotId,
+                ...stagePayload
+              })
+            }).catch(() => {});
+          } catch (e) {}
         }
       };
 
-      const syncCandidatesFromGoogleSheet = async (showToast = false) => {
+      // ฟังก์ชันส่งผลการประเมินคะแนนสัมภาษณ์ไปยังศูนย์กลาง (Apps Script Backend)
+      const sendCentralEvaluation = async (slotId, evalData) => {
+        if (!slotId || !evalData) return;
+
+        if (syncBroadcastChannel) {
+          try {
+            syncBroadcastChannel.postMessage({
+              type: "EVALUATION_UPDATE",
+              slotId: slotId,
+              evaluation: evalData
+            });
+          } catch (e) {}
+        }
+
+        if (googleScriptUrl) {
+          try {
+            fetch(googleScriptUrl, {
+              method: "POST",
+              mode: "no-cors",
+              headers: { "Content-Type": "text/plain" },
+              body: JSON.stringify({
+                action: "saveBlindEvaluation",
+                slotId: slotId,
+                evaluation: evalData
+              })
+            }).catch(() => {});
+          } catch (e) {}
+        }
+      };
+
+      // ฟังก์ชันส่งการลบตำแหน่งไปยังศูนย์กลาง (Apps Script Backend)
+      const sendCentralSlotDeletion = async (slotId, reason) => {
+        if (!slotId) return;
+        if (syncBroadcastChannel) {
+          try {
+            syncBroadcastChannel.postMessage({ type: "TRIGGER_SYNC" });
+          } catch (e) {}
+        }
+        if (googleScriptUrl) {
+          try {
+            fetch(googleScriptUrl, {
+              method: "POST",
+              mode: "no-cors",
+              headers: { "Content-Type": "text/plain" },
+              body: JSON.stringify({
+                action: "deleteSlot",
+                slotId: slotId,
+                reason: reason || "Deleted by admin"
+              })
+            }).catch(() => {});
+          } catch (e) {}
+        }
+      };
+
+      // Real-time Background Polling & Manual Sync Function (Central Source of Truth)
+      const syncWorkflowStatus = async (silent = true) => {
+        if (!googleScriptUrl) return;
+
         try {
-          const res = await fetch(GOOGLE_SHEET_CANDIDATES_CSV_URL);
+          const res = await fetch(`${googleScriptUrl}?action=getWorkflowStatuses&_t=${Date.now()}`, {
+            cache: "no-store",
+            headers: { "Pragma": "no-cache", "Cache-Control": "no-cache" }
+          });
+          const resJson = await res.json();
+
+          if (resJson && resJson.status === "success") {
+            const serverStatuses = resJson.data || resJson.slotStages || {};
+            const itConfirmedSlots = resJson.itConfirmedSlots || {};
+            const slotStages = resJson.slotStages || {};
+            const evalsMap = resJson.evaluations || {};
+            const deletedMap = resJson.deletedSlots || {};
+
+            const timeNow = new Date().toLocaleTimeString("th-TH", { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            setSyncHealth({
+              status: "connected",
+              lastSyncTime: timeNow,
+              errorMessage: ""
+            });
+
+            // 1. นำสถานะกลาง (Central Live Overrides) มาใช้กับทุก Slot เพื่อให้ User ทุกคนเห็นตรงกันเสมอ
+            setRequests(prevRequests => {
+              return prevRequests.map(r => {
+                const mainId = r.id;
+                const cleanId = String(mainId).replace(/-\d+$/, "");
+                const remoteWfItem = serverStatuses[mainId] || serverStatuses[cleanId];
+
+                const updatedSlots = (r.slots || []).map(s => {
+                  const stageOverride = slotStages[s.slotId] || slotStages[mainId];
+                  const itAckFromRemote = Boolean(itConfirmedSlots[s.slotId] || itConfirmedSlots[mainId]);
+                  const remoteEvals = evalsMap[s.slotId] || [];
+
+                  // ตรวจสอบการลบถาวร
+                  if (stageOverride?.isDeleted || deletedMap[s.slotId] || deletedMap[mainId]) {
+                    return null;
+                  }
+
+                  const newWfStatus = remoteWfItem?.status || stageOverride?.slotStatus || s.workflowStatus;
+                  const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(stageOverride?.itEquipmentConfirmed);
+                  
+                  // สเตจจริงจากเซิร์ฟเวอร์กลาง: หากแอดมินย้ายไป interview ทุกหน้าต่างจะเปลี่ยนเป็น interview ทันที
+                  let effectiveStage = s.stage;
+                  if (stageOverride?.stage) {
+                    effectiveStage = stageOverride.stage;
+                  } else if (stageOverride?.candidateName && !s.stage) {
+                    effectiveStage = "interview";
+                  }
+
+                  return {
+                    ...s,
+                    jobTitle: stageOverride?.jobTitle || s.jobTitle,
+                    workflowStatus: newWfStatus || s.workflowStatus,
+                    slotStatus: stageOverride?.slotStatus || (newWfStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : s.slotStatus),
+                    stage: effectiveStage,
+                    priority: stageOverride?.priority || s.priority || "NORMAL",
+                    candidateName: stageOverride?.candidateName !== undefined ? stageOverride.candidateName : s.candidateName,
+                    candidatePhone: stageOverride?.candidatePhone !== undefined ? stageOverride.candidatePhone : s.candidatePhone,
+                    candidateNickname: stageOverride?.candidateNickname !== undefined ? stageOverride.candidateNickname : s.candidateNickname,
+                    resumeUrl: stageOverride?.resumeUrl || s.resumeUrl,
+                    driveUrl: stageOverride?.resumeUrl || s.driveUrl,
+                    interviewSchedule: stageOverride?.interviewSchedule !== undefined ? stageOverride.interviewSchedule : s.interviewSchedule,
+                    googleMeetUrl: stageOverride?.googleMeetUrl !== undefined ? stageOverride.googleMeetUrl : s.googleMeetUrl,
+                    hireDate: stageOverride?.hireDate !== undefined ? stageOverride.hireDate : s.hireDate,
+                    rejectionReason: stageOverride?.rejectionReason !== undefined ? stageOverride.rejectionReason : s.rejectionReason,
+                    onboardingArrivalStatus: stageOverride?.onboardingArrivalStatus || s.onboardingArrivalStatus || "pending_arrival",
+                    hasAttendedFirstDayTraining: stageOverride?.hasAttendedFirstDayTraining !== undefined ? stageOverride.hasAttendedFirstDayTraining : s.hasAttendedFirstDayTraining,
+                    itEquipmentConfirmed: isItConfirmed,
+                    isItNotified: isItConfirmed ? true : Boolean(stageOverride?.isItNotified || s.isItNotified),
+                    isArchivedFromKanban: stageOverride?.isArchivedFromKanban !== undefined ? Boolean(stageOverride.isArchivedFromKanban) : Boolean(s.isArchivedFromKanban),
+                    evaluations: remoteEvals.length > 0 ? remoteEvals : (s.evaluations || [])
+                  };
+                }).filter(Boolean);
+
+                const newStatus = remoteWfItem?.status;
+                return {
+                  ...r,
+                  requestStatus: newStatus === "READY_FOR_RECRUITMENT" ? "READY_FOR_RECRUITMENT" : (newStatus || r.requestStatus),
+                  workflowStatus: newStatus || r.workflowStatus,
+                  slots: updatedSlots
+                };
+              });
+            });
+
+            setSelectedDetailSlot(prevSlot => {
+              if (!prevSlot) return null;
+              const stageOverride = slotStages[prevSlot.slotId];
+              const itAck = Boolean(itConfirmedSlots[prevSlot.slotId] || itConfirmedSlots[prevSlot.parentRequestId]);
+              const remoteEvals = evalsMap[prevSlot.slotId];
+
+              if (stageOverride || itAck || remoteEvals) {
+                return {
+                  ...prevSlot,
+                  ...(stageOverride || {}),
+                  itEquipmentConfirmed: itAck || prevSlot.itEquipmentConfirmed,
+                  evaluations: remoteEvals || prevSlot.evaluations || []
+                };
+              }
+              return prevSlot;
+            });
+
+            if (!silent) {
+              triggerToast("✅ ซิงค์ข้อมูลกลาง (Central Hub) เรียบร้อยแล้ว!");
+            }
+          } else {
+            setSyncHealth({
+              status: "error",
+              lastSyncTime: "-",
+              errorMessage: resJson?.message || "Google Apps Script ส่งข้อมูลผิดพลาด"
+            });
+          }
+        } catch (err) {
+          setSyncHealth({
+            status: "error",
+            lastSyncTime: "-",
+            errorMessage: err.message || "ไม่สามารถเชื่อมต่อ Google Apps Script Web App ได้"
+          });
+          if (!silent) {
+            triggerToast("⚠️ ไม่สามารถซิงค์สถานะได้ (ตรวจสอบสิทธิ์ Web App: Anyone)");
+          }
+        }
+      };
+
+      // ดึงข้อมูลคำขอกำลังคนโดยตรงจากแผ่นงาน Google Sheet GID 1528284561
+      const syncRequisitionsFromGoogleSheet = async (showToast = false) => {
+        try {
+          const res = await fetch(GOOGLE_SHEET_MANPOWER_CSV_URL);
           if (!res.ok) throw new Error("Network error");
           const csvText = await res.text();
           const rows = parseCSVText(csvText);
 
           if (rows.length > 1) {
-            const header = rows[0].map(h => (h || '').toLowerCase().trim());
-            let noIdx = header.findIndex(h => h.includes('no') || h.includes('ลำดับ'));
-            let yearIdx = header.findIndex(h => h.includes('year') || h.includes('ปี'));
-            let monthIdx = header.findIndex(h => h.includes('month') || h.includes('เดือน'));
-            let nameIdx = header.findIndex(h => (h.includes('ชื่อ') || h.includes('name')) && !h.includes('เล่น'));
-            let nickIdx = header.findIndex(h => h.includes('เล่น') || h.includes('nick'));
-            let phoneIdx = header.findIndex(h => h.includes('เบอร์') || h.includes('phone') || h.includes('tel'));
-            let posIdx = header.findIndex(h => h.includes('ตำแหน่ง') || h.includes('position'));
-            let levelIdx = header.findIndex(h => h.includes('level') || h.includes('ระดับ'));
-            let branchIdx = header.findIndex(h => h.includes('branch') || h.includes('สาขา'));
-            let typeIdx = header.findIndex(h => h.includes('type') || h.includes('ประเภท'));
-            let mbtiIdx = header.findIndex(h => h.includes('mbti'));
-            let prescreenIdx = header.findIndex(h => h.includes('prescreen'));
-            let resumeConfirmIdx = header.findIndex(h => h.includes('confirm'));
-            let interviewDateIdx = header.findIndex(h => h.includes('interview') || h.includes('สัมภาษณ์'));
-            let hireDateIdx = header.findIndex(h => h.includes('hire') || h.includes('เริ่มงาน'));
-            let statusIdx = header.findIndex(h => h.includes('status') || h.includes('สถานะ'));
-            let channelIdx = header.findIndex(h => h.includes('channel') || h.includes('source') || h.includes('ช่องทาง'));
-            let remarkIdx = header.findIndex(h => h.includes('remark') || h.includes('หมายเหตุ'));
-            let driveIdx = header.findIndex(h => h.includes('drive') || h.includes('resume') || h.includes('cv') || h.includes('เอกสาร') || h.includes('link') || h.includes('url'));
-            if (driveIdx === -1 && header.length >= 19) driveIdx = 18;
-
-            const loaded = [];
+            const parsedList = [];
             for (let i = 1; i < rows.length; i++) {
               const r = rows[i];
               if (!r || r.length < 2) continue;
+              const reqId = (r[0] || "").trim();
+              if (!reqId || reqId.toLowerCase().includes("request")) continue;
 
-              const fullName = (nameIdx !== -1 && r[nameIdx]) ? r[nameIdx].trim() : (r[3] || '').trim();
-              if (!fullName || fullName.includes("ชื่อ")) continue;
+              const headcount = Math.max(1, parseInt(r[11], 10) || 1);
+              const driveUrl = (r[32] || "").trim();
+              const candName = (r[30] || "").trim();
+              const candPhone = (r[31] || "").trim();
+              const rawReqStatus = (r[28] || "").trim();
 
-              const rawStatus = (statusIdx !== -1 && r[statusIdx]) ? r[statusIdx].trim() : "Pending";
-              const matchedStatus = CANDIDATE_STATUS_CONFIG.find(c => 
-                c.id.toLowerCase() === rawStatus.toLowerCase() || 
-                c.label.toLowerCase() === rawStatus.toLowerCase() ||
-                rawStatus.toLowerCase().includes(c.id.toLowerCase())
-              )?.id || "Pending";
-              const existingCand = candidatePool.find(c => c.fullName === fullName);
-              const sheetDriveUrl = (driveIdx !== -1 && r[driveIdx]) ? r[driveIdx].trim() : (r[18] ? r[18].trim() : "");
+              // คำนวณ Stage เริ่มต้นจากข้อมูลจริงใน Sheet
+              let defaultStage = "received";
+              if (candName) {
+                defaultStage = "interview";
+              } else if (rawReqStatus === "READY_FOR_RECRUITMENT" || rawReqStatus === "Recruiting") {
+                defaultStage = "manpower";
+              } else if (rawReqStatus === "Closed") {
+                defaultStage = "onboarded";
+              }
 
-              loaded.push({
-                no: (noIdx !== -1 && r[noIdx]) ? r[noIdx].trim() : i,
-                year: (yearIdx !== -1 && r[yearIdx]) ? r[yearIdx].trim() : "2026",
-                month: (monthIdx !== -1 && r[monthIdx]) ? r[monthIdx].trim() : "08",
-                candidateId: `CAND-2026-${String(i).padStart(3, '0')}`,
-                fullName,
-                nickname: (nickIdx !== -1 && r[nickIdx]) ? r[nickIdx].trim() : "",
-                phone: (phoneIdx !== -1 && r[phoneIdx]) ? r[phoneIdx].trim() : "",
-                targetJobTitle: (posIdx !== -1 && r[posIdx]) ? r[posIdx].trim() : "General Application",
-                level: (levelIdx !== -1 && r[levelIdx]) ? r[levelIdx].trim() : "Officer",
-                branch: (branchIdx !== -1 && r[branchIdx]) ? r[branchIdx].trim() : "-",
-                type: (typeIdx !== -1 && r[typeIdx]) ? r[typeIdx].trim() : "Full-Time",
-                mbti: (mbtiIdx !== -1 && r[mbtiIdx]) ? r[mbtiIdx].trim() : "-",
-                prescreenDate: (prescreenIdx !== -1 && r[prescreenIdx]) ? r[prescreenIdx].trim() : "",
-                resumeConfirmDate: (resumeConfirmIdx !== -1 && r[resumeConfirmIdx]) ? r[resumeConfirmIdx].trim() : "",
-                interviewDate: (interviewDateIdx !== -1 && r[interviewDateIdx]) ? r[interviewDateIdx].trim() : "",
-                hireDate: (hireDateIdx !== -1 && r[hireDateIdx]) ? r[hireDateIdx].trim() : "",
-                status: matchedStatus,
-                source: (channelIdx !== -1 && r[channelIdx]) ? r[channelIdx].trim() : "LinkedIn",
-                remark: (remarkIdx !== -1 && r[remarkIdx]) ? r[remarkIdx].trim() : "",
-                resumeUrl: sheetDriveUrl || existingCand?.resumeUrl || "",
-                assignedSlotId: existingCand?.assignedSlotId || ""
+              const slots = Array.from({ length: headcount }, (_, idx) => ({
+                slotId: `${reqId}-${idx + 1}`,
+                slotIndex: idx + 1,
+                slotStatus: rawReqStatus || "PENDING_ADMIN",
+                workflowStatus: rawReqStatus || "PENDING_ADMIN",
+                stage: defaultStage,
+                candidateName: candName,
+                candidatePhone: candPhone,
+                resumeUrl: driveUrl,
+                driveUrl: driveUrl,
+                evaluations: []
+              }));
+
+              parsedList.push({
+                id: reqId,
+                requestDate: (r[1] || "").trim(),
+                requesterName: (r[2] || "").trim(),
+                requesterPosition: (r[3] || "").trim(),
+                requesterEmail: (r[4] || "").trim(),
+                department: (r[5] || "-").trim(),
+                division: (r[6] || "-").trim(),
+                candidateSupervisor: (r[7] || "-").trim(),
+                approverName: (r[8] || "ศรัณย์ภัทธ อุบล").trim(),
+                approverEmail: (r[9] || "sarunpat.ub@valuesourcing.co").trim(),
+                jobTitle: (r[10] || "").trim(),
+                headcountRequired: headcount,
+                positionType: (r[12] || "Replacement").trim(),
+                replacedEmployeeName: (r[13] || "").trim(),
+                targetDate: (r[14] || "").trim(),
+                buddy: (r[15] || "").trim(),
+                workLocation: (r[16] || "Dusit Central Park").trim(),
+                gender: (r[17] || "ไม่ระบุ").trim(),
+                age: (r[18] || "ไม่จำกัด").trim(),
+                educationLevel: (r[19] || "ปริญญาตรี").trim(),
+                major: (r[20] || "-").trim(),
+                experience: (r[21] || "1-3 ปี").trim(),
+                mustHaveQualifications: (r[22] || "-").trim(),
+                jobDescription: (r[23] || "-").trim(),
+                itLaptop: (r[24] || "ต้องการ").trim(),
+                itSimCard: (r[25] || "ไม่ต้องการ").trim(),
+                itEmail: (r[26] || "ต้องการ").trim(),
+                itNetsuite: (r[27] || "ไม่ต้องการ").trim(),
+                requestStatus: rawReqStatus || "PENDING_ADMIN",
+                workflowStatus: rawReqStatus || "PENDING_ADMIN",
+                lastUpdated: (r[29] || "").trim(),
+                candidateName: candName,
+                candidatePhone: candPhone,
+                driveUrl: driveUrl,
+                resumeUrl: driveUrl,
+                slots: slots
               });
             }
 
-            if (loaded.length > 0) {
-              setCandidatePool(loaded);
-              if (showToast) triggerToast(`ซิงค์ข้อมูลผู้สมัครจาก Sheet สำเร็จ (${loaded.length} คน)`);
+            if (parsedList.length > 0) {
+              setRequests(prev => {
+                const map = new Map();
+                parsedList.forEach(item => map.set(item.id, item));
+
+                // รวมข้อมูลโดยรักษา Stage และการแก้ไขของ Slot เดิมไว้เสมอ (ไม่ถูกทับด้วย received)
+                prev.forEach(prevItem => {
+                  if (map.has(prevItem.id)) {
+                    const freshItem = map.get(prevItem.id);
+                    const mergedSlots = (freshItem.slots || []).map((fs, idx) => {
+                      const prevSlot = prevItem.slots?.[idx];
+                      if (!prevSlot) return fs;
+
+                      // ถ้ารายการเดิมมี Candidate หรือ Stage ที่ย้ายไปแล้ว ให้คงไว้เสมอ
+                      const keepStage = (prevSlot.stage && prevSlot.stage !== "received") ? prevSlot.stage : fs.stage;
+                      return {
+                        ...fs,
+                        ...prevSlot,
+                        stage: keepStage,
+                        candidateName: prevSlot.candidateName || fs.candidateName,
+                        candidatePhone: prevSlot.candidatePhone || fs.candidatePhone,
+                        resumeUrl: prevSlot.resumeUrl || fs.resumeUrl,
+                        interviewSchedule: prevSlot.interviewSchedule || fs.interviewSchedule,
+                        evaluations: prevSlot.evaluations || []
+                      };
+                    });
+
+                    map.set(prevItem.id, {
+                      ...freshItem,
+                      ...prevItem,
+                      slots: mergedSlots
+                    });
+                  } else {
+                    map.set(prevItem.id, prevItem);
+                  }
+                });
+
+                return Array.from(map.values());
+              });
+              if (showToast) triggerToast(`ซิงค์ Requisitions จาก Google Sheet สำเร็จ (${parsedList.length} รายการ)`);
             }
           }
-        } catch (err) {
-          if (showToast) triggerToast("ซิงค์ไม่สำเร็จ ใช้ออฟไลน์ข้อมูลแคชเดิม");
+        } catch (e) {
+          if (showToast) triggerToast("เชื่อมต่อข้อมูลชีทล้มเหลว");
         }
       };
 
+      // Auto-Polling every 3 seconds and sync on window focus (Real-Time Multi-User Sync)
       useEffect(() => {
-        syncPersonnelFromGoogleSheet(false);
+        syncWorkflowStatus(true);
+        syncRequisitionsFromGoogleSheet(false);
         syncCandidatesFromGoogleSheet(false);
-      }, []);
 
-      const departmentOptions = useMemo(() => {
-        const set = new Set(DEPARTMENTS);
-        personnelList.forEach(p => {
-          if (p?.department && p.department !== "-" && p.department.trim()) {
-            set.add(p.department.trim());
-          }
-        });
-        return Array.from(set);
-      }, [personnelList]);
+        const pollingInterval = setInterval(() => {
+          syncWorkflowStatus(true);
+        }, 3000);
 
-      const requesterOptions = useMemo(() => {
-        return personnelList.map(p => ({
-          value: p.nameEn || p.name,
-          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
-        }));
-      }, [personnelList]);
+        const handleWindowFocus = () => {
+          syncWorkflowStatus(true);
+          syncRequisitionsFromGoogleSheet(false);
+          syncCandidatesFromGoogleSheet(false);
+        };
 
-      const supervisorOptions = useMemo(() => {
-        return personnelList.map(p => ({
-          value: p.nameEn || p.name,
-          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
-        }));
-      }, [personnelList]);
+        window.addEventListener("focus", handleWindowFocus);
 
-      const buddyOptions = useMemo(() => {
-        return personnelList.map(p => ({
-          value: p.nameEn || p.name,
-          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
-        }));
-      }, [personnelList]);
+        return () => {
+          clearInterval(pollingInterval);
+          window.removeEventListener("focus", handleWindowFocus);
+        };
+      }, [googleScriptUrl]);
 
-      const evaluatorOptions = useMemo(() => {
-        return personnelList.map(p => ({
-          value: p.nameEn ? `${p.nameEn} (${p.name})` : p.name,
-          label: p.nameEn ? `${p.nameEn} (${p.name})` : p.name
-        }));
-      }, [personnelList]);
       // All position slots with individual slotStatus (Recruiting vs Closed)
       const allPositionSlots = useMemo(() => {
         return requests.flatMap(r => {
@@ -1926,24 +1716,17 @@
 
             // Workflow status of requisition & slot
             const slotWfStatus = slot.workflowStatus || slot.slotStatus || r.workflowStatus || r.requestStatus || "PENDING_ADMIN";
-            const isSlotApproved = slotWfStatus === "READY_FOR_RECRUITMENT" || 
-                                   slotWfStatus === "Recruiting" || 
-                                   slot.slotStatus === "READY_FOR_RECRUITMENT" || 
-                                   slot.slotStatus === "Recruiting" ||
-                                   (slot.stage && slot.stage !== "received");
-
-            const isPendingApproval = !isSlotApproved && (
-              slotWfStatus === "PENDING_ADMIN" || 
-              slotWfStatus === "PENDING_APPROVER" || 
-              slotWfStatus === "PENDING_IT"
-            );
-
-            let initialStage = slot.stage || r.stage || "received";
-            let effectiveStage = initialStage;
-            if (isPendingApproval) {
-              effectiveStage = "received";
-            } else if ((slotWfStatus === "READY_FOR_RECRUITMENT" || slotWfStatus === "Recruiting") && (initialStage === "received" || !initialStage)) {
+            
+            // 🔒 แก้ไขตรรกะสเตจ: หากมี Candidate หรือสเตจถูกกำหนดไว้แล้ว ห้ามดึงกลับเข้า received เด็ดขาด
+            let effectiveStage = slot.stage || "received";
+            if (slot.stage && slot.stage !== "received") {
+              effectiveStage = slot.stage;
+            } else if ((slot.candidateName && slot.candidateName.trim()) || (matchedCand && matchedCand.fullName)) {
+              effectiveStage = "interview";
+            } else if (slotWfStatus === "READY_FOR_RECRUITMENT" || slotWfStatus === "Recruiting") {
               effectiveStage = "manpower";
+            } else {
+              effectiveStage = "received";
             }
 
             const slotEffectiveStatus = (slot.slotStatus === "Closed" || effectiveStage === "onboarded" || effectiveStage === "cancelled")
@@ -4212,33 +3995,40 @@
                             title="ซิงค์ข้อมูลกับระบบศูนย์กลางทันที"
                           >
                             <Icon name="refresh" className="w-3.5 h-3.5 text-brand-600" />
-                            <span className="hidden sm:inline">Sync Live</span>
+                            <span>Sync Live</span>
                           </button>
-
-                          <div className="relative w-full sm:w-64">
-                            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                              <Icon name="search" className="w-4 h-4" />
-                            </div>
-                            <input
-                              type="text"
-                              placeholder="Search..."
-                              value={searchQuery}
-                              onChange={(e) => setSearchQuery(e.target.value)}
-                              className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
-                            />
-                          </div>
                         </div>
                       </div>
 
-                      {/* Info Banner for Evaluation & Real-time Sync */}
+                      {/* Info Banner for Evaluation & Real-time Sync with Dynamic Health Indicator */}
                       <div className="mb-5 p-3 rounded-2xl bg-gradient-to-r from-sky-50 via-indigo-50/50 to-emerald-50/40 dark:from-sky-950/40 dark:via-indigo-950/30 dark:to-emerald-950/30 border border-sky-200 dark:border-sky-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                         <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
                           <span className="text-base">🌐</span>
-                          <span><strong>ระบบศูนย์กลาง (Central Hub):</strong> ข้อมูลทั้งหมดซิงค์ตรงกันแบบ Real-time ทุกหน้าจอ หากแอดมินแก้ไขข้อมูลหรือย้ายขั้นตอน User ทุกคนจะเห็นตรงกันทันที</span>
+                          <span><strong>ระบบศูนย์กลาง (Central Hub):</strong> ข้อมูลทั้งสเตจ Interview, ผู้สมัคร, และการประเมินซิงค์ตรงกันแบบ Real-time ทุกหน้าจอ</span>
                         </div>
-                        <div className="shrink-0 flex items-center gap-1.5 font-bold text-sky-700 dark:text-sky-300">
-                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-                          <span>Live Connected</span>
+                        
+                        <div className="shrink-0 flex items-center gap-2">
+                          {syncHealth.status === "connected" ? (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-300 font-extrabold text-[11px] shadow-2xs">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                              <span>Live Connected ({syncHealth.lastSyncTime})</span>
+                            </div>
+                          ) : syncHealth.status === "syncing" ? (
+                            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-300 font-bold text-[11px]">
+                              <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
+                              <span>กำลังซิงค์ข้อมูล...</span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setShowSyncDiagModal(true)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-300 border border-rose-300 font-extrabold text-[11px] animate-pulse hover:bg-rose-200 transition"
+                              title="คลิกเพื่อดูวิธีแก้ไขการเชื่อมต่อ"
+                            >
+                              <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                              <span>⚠️ Sync Error (คลิกดูวิธีแก้)</span>
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -9180,21 +8970,14 @@
                 <div className="w-12 h-12 rounded-2xl bg-rose-100 dark:bg-rose-950/70 text-rose-600 flex items-center justify-center mx-auto text-xl">
                   🗑️
                 </div>
-
                 <div>
                   <h3 className="text-base font-extrabold text-slate-900 dark:text-white">
                     ยืนยันการลบข้อมูลผู้สมัคร
                   </h3>
                   <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                    คุณต้องการลบข้อมูลคุณ <strong>"{candidateToDelete.fullName}"</strong> ({candidateToDelete.candidateId || `#${candidateToDelete.no}`}) ออกจากระบบใช่หรือไม่?
+                    คุณต้องการลบข้อมูลคุณ <strong>"{candidateToDelete.fullName}"</strong> ออกจากระบบใช่หรือไม่?
                   </p>
-                  {candidateToDelete.assignedSlotId && (
-                    <p className="text-[11px] text-amber-700 dark:text-amber-300 font-semibold bg-amber-50 dark:bg-amber-950/40 p-2 rounded-xl mt-2">
-                      ⚠️ ผู้สมัครนี้กำลังผูกอยู่กับ Slot #{candidateToDelete.assignedSlotId} ระบบจะปลดการผูกตำแหน่งออกให้อัตโนมัติ
-                    </p>
-                  )}
                 </div>
-
                 <div className="flex gap-2 justify-center pt-2">
                   <button
                     type="button"
@@ -9215,48 +8998,82 @@
             </div>
           )}
 
-          {/* Google Sign-in Corporate Authentication Modal (Clean & Minimal) */}
-          {showLoginModal && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md animate-fadeIn">
-              <div className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-7 overflow-hidden text-center">
-                
-                {/* Close Button */}
-                <button
-                  type="button"
-                  onClick={() => { setShowLoginModal(false); setLoginError(""); }}
-                  className="absolute top-4 right-4 p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-                >
-                  <Icon name="x" className="w-4 h-4" />
-                </button>
-
-                {/* Google Icon Badge */}
-                <div className="w-12 h-12 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center mx-auto mb-3 shadow-inner">
-                  <svg className="w-6 h-6" viewBox="0 0 24 24">
-                    <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                    <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                    <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
-                    <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
-                  </svg>
-                </div>
-
-                <h3 className="text-base font-extrabold text-slate-900 dark:text-white mb-5">
-                  Sign in with Google
-                </h3>
-
-                {/* Official Google Identity Services Button Container */}
-                <div className="flex flex-col items-center justify-center min-h-[46px]">
-                  <div id="googleSignInBtnContainer" className="flex justify-center"></div>
-                  {isGsiLoading && (
-                    <span className="text-xs text-slate-400 mt-2">กำลังเชื่อมต่อ Google...</span>
-                  )}
-                </div>
-
-                {/* Error alert box */}
-                {loginError && (
-                  <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 text-xs font-semibold leading-relaxed mt-4 text-center">
-                    {loginError}
+          {/* Diagnostic Modal for Google Apps Script Web App Permissions */}
+          {showSyncDiagModal && (
+            <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-4 bg-slate-950/80 backdrop-blur-md animate-fadeIn">
+              <div className="relative w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-rose-300 dark:border-rose-900 overflow-hidden flex flex-col max-h-[92vh]">
+                <div className="px-6 py-4 bg-gradient-to-r from-rose-600 to-amber-600 text-white flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">⚠️</span>
+                    <div>
+                      <h3 className="text-base font-extrabold">การเชื่อมต่อระบบศูนย์กลาง (Sync Troubleshooting)</h3>
+                      <p className="text-[10.5px] text-rose-100">ตรวจสอบและตั้งค่าสิทธิ์ Google Apps Script Web App</p>
+                    </div>
                   </div>
-                )}
+                  <button onClick={() => setShowSyncDiagModal(false)} className="p-1.5 text-white/80 hover:text-white">
+                    <Icon name="x" className="w-5 h-5" />
+                  </button>
+                </div>
+
+                <div className="p-6 space-y-4 overflow-y-auto flex-1 text-xs text-slate-700 dark:text-slate-300">
+                  <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-200 space-y-1">
+                    <strong className="block font-bold">สาเหตุที่หน้าจอคนละ User ไม่ซิงค์กัน:</strong>
+                    <p className="leading-relaxed">
+                      Google Apps Script Web App ยังไม่ได้ตั้งค่าสิทธิ์ให้ <strong>"ทุกคน (Anyone)"</strong> เข้าถึงได้ ทำให้เมื่อ User อื่นเปิดหน้าเว็บ Google จะปฏิเสธการส่งข้อมูลสถานะ
+                    </p>
+                    {syncHealth.errorMessage && (
+                      <p className="font-mono text-[10px] text-rose-600 dark:text-rose-400 mt-1 bg-white/60 dark:bg-slate-900/60 p-2 rounded-lg">
+                        Error: {syncHealth.errorMessage}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2 p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700">
+                    <strong className="block text-slate-900 dark:text-white font-bold text-[12px]">
+                      วิธีตั้งค่าใน Google Apps Script (ทำครั้งเดียว):
+                    </strong>
+                    <ol className="list-decimal list-inside space-y-1.5 pl-1 leading-relaxed">
+                      <li>เปิดหน้า Google Apps Script ที่ใส่โค้ด <code>Code.gs</code> ล่าสุด</li>
+                      <li>คลิกปุ่มสีน้ำเงิน <strong>"การทำให้ใช้งานได้ (Deploy)"</strong> ➔ <strong>"การทำให้ใช้งานได้รายการใหม่ (New deployment)"</strong></li>
+                      <li>ตรงรูปฟันเฟืองเลือกประเภทเป็น <strong>"เว็บแอป (Web app)"</strong></li>
+                      <li><strong>ดำเนินการในฐานะ (Execute as):</strong> เลือกเป็น <strong>"ฉัน (Me - wanwisa...)"</strong></li>
+                      <li><strong>ผู้มีสิทธิ์เข้าถึง (Who has access):</strong> สำคัญมาก! ต้องเลือกเป็น <strong>"ทุกคน (Anyone)"</strong> เท่านั้น</li>
+                      <li>กดปุ่ม <strong>"ทำให้ใช้งานได้ (Deploy)"</strong> แล้วคัดลอก URL มาวาง</li>
+                    </ol>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Web App URL ที่ใช้อยู่ปัจจุบัน:
+                    </label>
+                    <input
+                      type="text"
+                      readOnly
+                      value={googleScriptUrl}
+                      className="w-full p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-[11px] text-slate-600 dark:text-slate-300"
+                    />
+                  </div>
+                </div>
+
+                <div className="p-4 bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowSyncDiagModal(false)}
+                    className="px-4 py-2 rounded-xl text-xs font-semibold bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200"
+                  >
+                    ปิดหน้าต่าง
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      syncWorkflowStatus(false);
+                      setShowSyncDiagModal(false);
+                    }}
+                    className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 shadow-md"
+                  >
+                    ทดสอบเชื่อมต่อใหม่ (Retry Sync)
+                  </button>
+                </div>
               </div>
             </div>
           )}
