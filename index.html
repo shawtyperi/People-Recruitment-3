@@ -955,7 +955,7 @@
         setTimeout(() => setToastMessage(""), 3500);
       };
 
-      // 🌟 Real-time Lifecycle: เริ่มต้นดึงข้อมูลทันทีเมื่อเปิดแอป และตั้งเวลา Polling อัตโนมัติทุก 4 วินาที
+      // 🌟 Real-time Lifecycle: เพิ่มความเร็ว Polling เป็น 1.5 วินาที เพื่อให้ทุกหน้าต่างเห็นตรงกันแบบ Instant Real-Time
       useEffect(() => {
         // 1. ดึงข้อมูลพื้นฐานจาก Google Sheets
         syncRequisitionsFromGoogleSheet(false);
@@ -964,10 +964,10 @@
         // 2. ดึงสถานะกลางล่าสุดจาก Central Engine ทันที
         syncWorkflowStatus(true);
 
-        // 3. ตัวจับเวลา Polling ทำงานต่อเนื่องทุก 4 วินาที
+        // 3. ตัวจับเวลา Polling ทำงานต่อเนื่องทุก 1.5 วินาที (ตอบสนองไว ไม่หน่วง)
         const intervalId = setInterval(() => {
           syncWorkflowStatus(true);
-        }, 4000);
+        }, 1500);
 
         // 4. เมื่อผู้ใช้คลิกสลับแท็บกลับมาหน้าจอ ให้ดึงข้อมูลสดทันที
         const handleWindowFocus = () => {
@@ -1500,7 +1500,7 @@
       const sendCentralSlotStageUpdate = async (slotId, stagePayload) => {
         if (!slotId) return;
 
-        // 1. ส่งสัญญาณข้ามหน้าต่างทันที (0ms)
+        // 1. ส่งสัญญาณข้ามหน้าต่างทันที (0ms) สำหรับแท็บในเครื่องเดียวกัน
         if (syncBroadcastChannel) {
           try {
             syncBroadcastChannel.postMessage({
@@ -1523,6 +1523,9 @@
                 slotId: slotId,
                 ...stagePayload
               })
+            }).then(() => {
+              // 3. สั่งซิงค์ทันทีหลังยิง POST เสร็จ เพื่อให้ข้อมูลตรงกัน 100%
+              setTimeout(() => syncWorkflowStatus(true), 300);
             }).catch(() => {});
           } catch (e) {}
         }
@@ -1553,6 +1556,8 @@
                 slotId: slotId,
                 evaluation: evalData
               })
+            }).then(() => {
+              setTimeout(() => syncWorkflowStatus(true), 300);
             }).catch(() => {});
           } catch (e) {}
         }
@@ -1577,6 +1582,8 @@
                 slotId: slotId,
                 reason: reason || "Deleted by admin"
               })
+            }).then(() => {
+              setTimeout(() => syncWorkflowStatus(true), 300);
             }).catch(() => {});
           } catch (e) {}
         }
@@ -4354,7 +4361,7 @@
                       <div className="mb-5 p-3 rounded-2xl bg-gradient-to-r from-sky-50 via-indigo-50/50 to-emerald-50/40 dark:from-sky-950/40 dark:via-indigo-950/30 dark:to-emerald-950/30 border border-sky-200 dark:border-sky-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                         <div className="flex items-center gap-2 text-slate-700 dark:text-slate-200">
                           <span className="text-base">🌐</span>
-                          <span><strong>ระบบศูนย์กลาง (Central Hub):</strong> ข้อมูลทั้งสเตจ Interview, ผู้สมัคร, และการประเมินซิงค์ตรงกันแบบ Real-time ทุกหน้าจอ</span>
+                          <span><strong>ระบบศูนย์กลาง (Central Hub):</strong> ข้อมูลทั้งสเตจ Interview, ผู้สมัคร, และการประเมินซิงค์ตรงกันแบบ Real-time ทุกหน้าจอ (รอบ 1.5 วินาที)</span>
                         </div>
                         
                         <div className="shrink-0 flex items-center gap-2">
