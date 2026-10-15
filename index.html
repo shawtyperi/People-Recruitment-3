@@ -745,6 +745,9 @@
       : null;
 
     function App() {
+      // ตัวเก็บประวัติการเปลี่ยน Stage ล่าสุดเพื่อป้องกันไม่ให้ Polling ดึงสถานะเก่ามาทับทันที
+      const recentLocalStageUpdates = useRef(new Map());
+
       const [requests, setRequests] = useState(() => {
         const saved = localStorage.getItem(PROD_REQUESTS_KEY);
         return saved ? JSON.parse(saved) : INITIAL_RECRUITMENT_DATA;
@@ -1505,9 +1508,12 @@
                   const newWfStatus = remoteWfItem?.status || stageOverride?.slotStatus || s.workflowStatus;
                   const isItConfirmed = itAckFromRemote || s.itEquipmentConfirmed || Boolean(stageOverride?.itEquipmentConfirmed);
                   
-                  // สเตจจริงจากเซิร์ฟเวอร์กลาง: หากแอดมินย้ายไป interview ทุกหน้าต่างจะเปลี่ยนเป็น interview ทันที
+                  // สเตจจริง: ตรวจสอบว่าแอดมินเพิ่งเปลี่ยนสเตจในเครื่องนี้หรือไม่ (ถ้าเพิ่งเปลี่ยนไม่เกิน 10 วินาที ให้ใช้สเตจใหม่เสมอ)
                   let effectiveStage = s.stage;
-                  if (stageOverride?.stage) {
+                  const recent = recentLocalStageUpdates.current.get(s.slotId);
+                  if (recent && (Date.now() - recent.timestamp < 10000)) {
+                    effectiveStage = recent.stage;
+                  } else if (stageOverride?.stage) {
                     effectiveStage = stageOverride.stage;
                   } else if (stageOverride?.candidateName && !s.stage) {
                     effectiveStage = "interview";
@@ -1790,16 +1796,16 @@
             // Workflow status of requisition & slot
             const slotWfStatus = slot.workflowStatus || slot.slotStatus || r.workflowStatus || r.requestStatus || "PENDING_ADMIN";
             
-            // 🔒 แก้ไขตรรกะสเตจ: หากมี Candidate หรือสเตจถูกกำหนดไว้แล้ว ห้ามดึงกลับเข้า received เด็ดขาด
-            let effectiveStage = slot.stage || "received";
-            if (slot.stage && slot.stage !== "received") {
-              effectiveStage = slot.stage;
-            } else if ((slot.candidateName && slot.candidateName.trim()) || (matchedCand && matchedCand.fullName)) {
-              effectiveStage = "interview";
-            } else if (slotWfStatus === "READY_FOR_RECRUITMENT" || slotWfStatus === "Recruiting") {
-              effectiveStage = "manpower";
-            } else {
-              effectiveStage = "received";
+            // 🔒 กำหนดสเตจ: เคารพสเตจที่ตั้งไว้ล่าสุดเสมอ (ไม่ถูกดึงกลับเข้า received หรือ interview แบบไม่ตั้งใจ)
+            let effectiveStage = slot.stage;
+            if (!effectiveStage) {
+              if ((slot.candidateName && slot.candidateName.trim()) || (matchedCand && matchedCand.fullName)) {
+                effectiveStage = "interview";
+              } else if (slotWfStatus === "READY_FOR_RECRUITMENT" || slotWfStatus === "Recruiting") {
+                effectiveStage = "manpower";
+              } else {
+                effectiveStage = "received";
+              }
             }
 
             const slotEffectiveStatus = (slot.slotStatus === "Closed" || effectiveStage === "onboarded" || effectiveStage === "cancelled")
@@ -2137,6 +2143,8 @@
           return { ...r, stage: "interview", slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
 
+        recentLocalStageUpdates.current.set(targetSlot.slotId, { stage: "interview", timestamp: Date.now() });
+
         // 🔄 ส่งข้อมูลอัปเดตไปยังศูนย์กลางทันที
         sendCentralSlotStageUpdate(targetSlot.slotId, {
           stage: "interview",
@@ -2260,6 +2268,8 @@
           });
           return { ...r, slots, lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19) };
         }));
+
+        recentLocalStageUpdates.current.set(targetSlotId, { stage: "received", timestamp: Date.now() });
 
         // 🔄 ส่งการปลดผู้สมัครไปยังศูนย์กลาง
         sendCentralSlotStageUpdate(targetSlotId, {
@@ -3036,11 +3046,11 @@
 
         // 2. Update Specific Slot to Closed and Onboarded
         setRequests(prev => prev.map(r => {
-          if (!r.slots) return r;
-          const targetSlot = r.slots.find(s => s.slotId === slotId);
-          if (!targetSlot) return r;
+          const isTargetReq = r.id === (slotItem?.parentRequestId || slotItem?.id) || r.slots?.some(s => s.slotId === slotId);
+          if (!isTargetReq) return r;
 
-          const updatedSlots = r.slots.map(s => {
+          const baseSlots = (r.slots && r.slots.length > 0) ? r.slots : [{ ...slotItem, slotId }];
+          const updatedSlots = baseSlots.map(s => {
             if (s.slotId === slotId) {
               return {
                 ...s,
@@ -3067,6 +3077,8 @@
             lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
           };
         }));
+
+        recentLocalStageUpdates.current.set(slotId, { stage: "onboarded", timestamp: Date.now() });
 
         const payloadToSync = {
           ...slotItem,
@@ -3108,11 +3120,11 @@
         }
 
         setRequests(prev => prev.map(r => {
-          if (!r.slots) return r;
-          const targetSlot = r.slots.find(s => s.slotId === slotId);
-          if (!targetSlot) return r;
+          const isTargetReq = r.id === (slotItem?.parentRequestId || slotItem?.id) || r.slots?.some(s => s.slotId === slotId);
+          if (!isTargetReq) return r;
 
-          const updatedSlots = r.slots.map(s => {
+          const baseSlots = (r.slots && r.slots.length > 0) ? r.slots : [{ ...slotItem, slotId }];
+          const updatedSlots = baseSlots.map(s => {
             if (s.slotId === slotId) {
               return {
                 ...s,
@@ -3135,6 +3147,10 @@
             lastUpdated: new Date().toISOString().replace('T', ' ').substring(0, 19)
           };
         }));
+
+        if (!isArrivalDecline) {
+          recentLocalStageUpdates.current.set(slotId, { stage: "cancelled", timestamp: Date.now() });
+        }
 
         // 🔄 ซิงค์เหตุผลและการยกเลิกไปยังศูนย์กลาง
         sendCentralSlotStageUpdate(slotId, {
@@ -3161,33 +3177,48 @@
       const updateSlotStageDirectly = (targetSlotId, targetStage) => {
         const todayStr = new Date().toISOString().split('T')[0];
 
+        // บันทึกสเตจใหม่ใน Local Ref ทันทีเพื่อป้องกันไม่ให้ Polling ทุก 3 วินาทีนำสเตจเก่ามาทับ
+        recentLocalStageUpdates.current.set(targetSlotId, { stage: targetStage, timestamp: Date.now() });
+
         setRequests(prev => prev.map(r => {
-          const headcount = Math.max(1, Number(r.headcountRequired) || 1);
-          let slots = r.slots && r.slots.length === headcount ? [...r.slots] : Array.from({ length: headcount }, (_, i) => ({
-            slotId: `${r.id}-${i + 1}`,
-            slotIndex: i + 1,
-            slotStatus: r.requestStatus || "Recruiting",
-            candidateName: "",
-            stage: r.stage || "received",
-            offerSentDate: "",
-            interviewScore: 0,
-            interviewScorePercent: 0,
-            interviewResult: "",
-            onboardingArrivalStatus: "pending_arrival",
-            rejectionReason: "",
-            evaluations: []
-          }));
+          // ตรวจสอบว่าคำขอนี้มี Slot เป้าหมายหรือไม่
+          const hasTargetSlot = r.slots?.some(s => s.slotId === targetSlotId) || r.id === targetSlotId;
+          if (!hasTargetSlot) return r;
+
+          // รักษา Slot เดิมไว้เสมอ ไม่สร้างทับหรือลบรายการเดิมทิ้ง
+          const baseSlots = (r.slots && r.slots.length > 0)
+            ? r.slots
+            : [{
+                slotId: `${r.id}-1`,
+                slotIndex: 1,
+                slotStatus: r.requestStatus || "READY_FOR_RECRUITMENT",
+                candidateName: r.candidateName || "",
+                candidatePhone: r.candidatePhone || "",
+                candidateNickname: r.candidateNickname || "",
+                resumeUrl: r.resumeUrl || "",
+                stage: r.stage || "received",
+                offerSentDate: "",
+                hireDate: "",
+                interviewSchedule: "",
+                interviewScore: 0,
+                interviewScorePercent: 0,
+                interviewResult: "",
+                onboardingArrivalStatus: "pending_arrival",
+                rejectionReason: "",
+                evaluations: []
+              }];
 
           let slotUpdated = false;
-          slots = slots.map(s => {
-            if (s.slotId === targetSlotId) {
+          const slots = baseSlots.map(s => {
+            if (s.slotId === targetSlotId || (baseSlots.length === 1 && s.slotId.startsWith(r.id))) {
               slotUpdated = true;
               const isNowOffer = targetStage === "offer";
               const isNowCancelled = targetStage === "cancelled";
+              const isNowOnboarded = targetStage === "onboarded";
               return {
                 ...s,
                 stage: targetStage,
-                slotStatus: isNowCancelled ? "Closed" : s.slotStatus,
+                slotStatus: isNowCancelled || isNowOnboarded ? "Closed" : (s.slotStatus === "Closed" && targetStage !== "cancelled" && targetStage !== "onboarded" ? "Recruiting" : s.slotStatus),
                 offerSentDate: isNowOffer ? (s.offerSentDate || todayStr) : s.offerSentDate,
                 onboardingArrivalStatus: isNowCancelled ? "declined_noshow" : s.onboardingArrivalStatus
               };
@@ -3199,6 +3230,7 @@
             const allSlotsClosed = slots.every(s => s.slotStatus === "Closed" || s.stage === "onboarded" || s.stage === "cancelled");
             return {
               ...r,
+              stage: targetStage,
               requestStatus: allSlotsClosed ? "Closed" : "Recruiting",
               offerSentDate: targetStage === "offer" ? (r.offerSentDate || todayStr) : r.offerSentDate,
               slots,
@@ -3208,13 +3240,16 @@
           return r;
         }));
 
+        // อัปเดต selectedDetailSlot ทันทีหากกำลังเปิดดูอยู่
+        setSelectedDetailSlot(prev => prev && prev.slotId === targetSlotId ? { ...prev, stage: targetStage } : prev);
+
         // 🔄 ส่งขั้นตอนใหม่ไปยังศูนย์กลาง Apps Script ทันที
         sendCentralSlotStageUpdate(targetSlotId, {
           stage: targetStage,
           offerSentDate: targetStage === "offer" ? todayStr : undefined
         });
 
-        triggerToast(`อัปเดต Slot #${targetSlotId} เป็น ${targetStage}`);
+        triggerToast(`✅ ย้ายตำแหน่ง #${targetSlotId} ไปสู่ "${targetStage}" สำเร็จ!`);
       };
 
       // Stage Transition Gatekeeper (Trigger Modals for Interview / Onboarded / Cancelled)
@@ -3222,27 +3257,27 @@
         const slotItem = allPositionSlots.find(s => s.slotId === slotId);
         if (!slotItem) return;
 
-        // If moving to interview stage but candidate has not been assigned yet
+        // ถ้ากำลังจะย้ายเข้าด่านสัมภาษณ์ แต่ยังไม่มีผู้สมัครจับคู่ ให้เปิดหน้าต่างเลือกผู้สมัคร
         if (targetStage === "interview" && !slotItem.candidateName) {
           setUnassignedInterviewSlotModal(slotItem);
           return;
         }
 
-        // If moving to onboarded stage -> open Hire Date modal
+        // ถ้าย้ายเข้าด่าน Onboarded ให้เปิดหน้าต่างระบุวันเริ่มงาน
         if (targetStage === "onboarded") {
           setOnboardModalData({ slotId, slotItem });
           setOnboardHireDateInput(slotItem.hireDate || new Date().toISOString().split('T')[0]);
           return;
         }
 
-        // If moving to cancelled stage -> open Rejection Reason modal
+        // ถ้าย้ายเข้าด่าน Cancelled ให้เปิดหน้าต่างระบุเหตุผลการสละสิทธิ์
         if (targetStage === "cancelled") {
           setRejectionModalData({ slotId, slotItem, isArrivalDecline: false });
           setRejectionReasonInput(slotItem.rejectionReason || "");
           return;
         }
 
-        // Otherwise, perform direct stage update
+        // สเตจทั่วไป (เช่น manpower, interview, offer) ให้ย้ายขั้นตอนทันที
         updateSlotStageDirectly(slotId, targetStage);
       };
 
@@ -4147,9 +4182,27 @@
                           return (
                             <div
                               key={stage.id}
-                              onDragOver={(e) => isAdminAuthenticated && handleDragOver(e, stage.id)}
-                              onDragLeave={(e) => isAdminAuthenticated && handleDragLeave(e, stage.id)}
-                              onDrop={(e) => isAdminAuthenticated && handleDrop(e, stage.id)}
+                              onDragOver={(e) => {
+                                if (!isAdminAuthenticated) return;
+                                e.preventDefault();
+                                e.dataTransfer.dropEffect = "move";
+                                if (dragOverStage !== stage.id) setDragOverStage(stage.id);
+                              }}
+                              onDragEnter={(e) => {
+                                if (!isAdminAuthenticated) return;
+                                e.preventDefault();
+                                if (dragOverStage !== stage.id) setDragOverStage(stage.id);
+                              }}
+                              onDragLeave={(e) => {
+                                if (!isAdminAuthenticated) return;
+                                if (e.currentTarget.contains(e.relatedTarget)) return;
+                                if (dragOverStage === stage.id) setDragOverStage(null);
+                              }}
+                              onDrop={(e) => {
+                                if (!isAdminAuthenticated) return;
+                                e.preventDefault();
+                                handleDrop(e, stage.id);
+                              }}
                               className={`w-72 shrink-0 snap-start flex flex-col rounded-2xl p-3 border-2 transition-all duration-150 ${
                                 dragOverStage === stage.id
                                   ? 'border-brand-500 bg-brand-50/70 dark:bg-brand-950/50 ring-2 ring-brand-500/20'
@@ -4181,7 +4234,19 @@
                                 )}
                               </div>
 
-                              <div className="space-y-2.5 flex-1 overflow-y-auto max-h-[560px] pr-0.5">
+                              <div 
+                                onDragOver={(e) => {
+                                  if (!isAdminAuthenticated) return;
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = "move";
+                                }}
+                                onDrop={(e) => {
+                                  if (!isAdminAuthenticated) return;
+                                  e.preventDefault();
+                                  handleDrop(e, stage.id);
+                                }}
+                                className="space-y-2.5 flex-1 overflow-y-auto max-h-[560px] pr-0.5 min-h-[120px]"
+                              >
                                 {stageItems.map(item => {
                                   const isBeingDragged = draggedSlotId === item.slotId;
                                   const priorityInfo = getPositionPriorityInfo(item);
@@ -4191,8 +4256,25 @@
                                     <div
                                       key={item.slotId}
                                       draggable={isAdminAuthenticated}
-                                      onDragStart={(e) => isAdminAuthenticated && handleDragStart(e, item.slotId)}
-                                      onDragEnd={() => { setDraggedSlotId(null); setDragOverStage(null); }}
+                                      onDragStart={(e) => {
+                                        if (!isAdminAuthenticated) return;
+                                        handleDragStart(e, item.slotId);
+                                      }}
+                                      onDragEnd={() => { 
+                                        setDraggedSlotId(null); 
+                                        setDragOverStage(null); 
+                                      }}
+                                      onDragOver={(e) => {
+                                        if (!isAdminAuthenticated) return;
+                                        e.preventDefault();
+                                        e.dataTransfer.dropEffect = "move";
+                                      }}
+                                      onDrop={(e) => {
+                                        if (!isAdminAuthenticated) return;
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        handleDrop(e, stage.id);
+                                      }}
                                       onClick={() => setSelectedDetailSlot(item)}
                                       className={`p-3.5 rounded-2xl border transition-all duration-150 cursor-pointer select-none group hover:shadow-sm ${
                                         isBeingDragged
@@ -4294,12 +4376,18 @@
                                           </span>
                                         )}
 
-                                        <div onClick={(e) => e.stopPropagation()} className="shrink-0 flex items-center gap-1.5">
+                                        <div 
+                                          onClick={(e) => e.stopPropagation()} 
+                                          onMouseDown={(e) => e.stopPropagation()}
+                                          className="shrink-0 flex items-center gap-1.5"
+                                        >
                                           
-                                          {/* ⭐ ปุ่มร่วมประเมินคะแนนสัมภาษณ์ (ทุกคน ทั้ง User และทั้งสอง Admin สามารถกดได้ที่นี่) */}
+                                          {/* ⭐ ปุ่มร่วมประเมินคะแนนสัมภาษณ์ */}
                                           {item.stage === "interview" && (
                                             <button
                                               type="button"
+                                              draggable={false}
+                                              onMouseDown={(e) => e.stopPropagation()}
                                               onClick={(e) => {
                                                 e.stopPropagation();
                                                 handleOpenBlindEvaluationModal(item);
@@ -4321,6 +4409,8 @@
                                             ) : (
                                               <button
                                                 type="button"
+                                                draggable={false}
+                                                onMouseDown={(e) => e.stopPropagation()}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   handleConfirmFirstDayTraining(item.slotId);
@@ -4337,8 +4427,14 @@
                                           {isAdminAuthenticated ? (
                                             <div className="flex items-center gap-1">
                                               <select
+                                                draggable={false}
+                                                onMouseDown={(e) => e.stopPropagation()}
+                                                onDragStart={(e) => e.stopPropagation()}
                                                 value={item.stage}
-                                                onChange={(e) => handleInitiateStageChange(item.slotId, e.target.value)}
+                                                onChange={(e) => {
+                                                  e.stopPropagation();
+                                                  handleInitiateStageChange(item.slotId, e.target.value);
+                                                }}
                                                 className="text-[10px] font-medium py-0.5 px-1.5 rounded-md bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 focus:outline-none cursor-pointer"
                                               >
                                                 {STAGES.map(st => (
@@ -4347,6 +4443,8 @@
                                               </select>
                                               <button
                                                 type="button"
+                                                draggable={false}
+                                                onMouseDown={(e) => e.stopPropagation()}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   handleDuplicateSlot(item);
@@ -4358,6 +4456,8 @@
                                               </button>
                                               <button
                                                 type="button"
+                                                draggable={false}
+                                                onMouseDown={(e) => e.stopPropagation()}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
                                                   setSlotToDelete(item);
