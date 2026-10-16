@@ -2762,10 +2762,6 @@
         const itSimCard = slotItem.itSimCard || parentReq.itSimCard || "ไม่ต้องการ";
         const itEmail = slotItem.itEmail || parentReq.itEmail || "ต้องการ";
         const itNetsuite = slotItem.itNetsuite || parentReq.itNetsuite || "ไม่ต้องการ";
-        const itConfirmed = Boolean(slotItem.itEquipmentConfirmed || parentReq.itEquipmentConfirmed);
-        const itStatus = itConfirmed
-          ? "✅ IT รับทราบ & อุปกรณ์พร้อมแล้ว"
-          : (slotItem.isItNotified ? "⏳ ส่งแจ้ง IT แล้ว (รอ IT ยืนยัน)" : "ยังไม่ได้แจ้ง IT");
 
         const resolvedDrive = String(slotItem.resumeUrl || slotItem.driveUrl || cand?.resumeUrl || cand?.driveUrl || "").trim();
         const candidateName = slotItem.candidateName || cand?.fullName || "";
@@ -2799,18 +2795,16 @@
               remark: slotItem.rejectionReason || "ปิดการสรรหาเรียบร้อยแล้ว (Closed)",
               driveUrl: resolvedDrive,
               resumeUrl: resolvedDrive,
-              // ข้อมูล IT เพิ่มเติมลงชีท Closed
+              // ดึงเฉพาะรายการอุปกรณ์ IT ที่ขอ (ไม่รวมสถานะ IT)
               itLaptop: itLaptop,
               itSimCard: itSimCard,
               itEmail: itEmail,
-              itNetsuite: itNetsuite,
-              itEquipmentConfirmed: itConfirmed,
-              itStatus: itStatus
+              itNetsuite: itNetsuite
             })
           });
 
           if (!silent) {
-            triggerToast(`✅ ซิงค์ Slot #${slotItem.slotId} พร้อมข้อมูล IT & ลิงก์ Drive ลง Sheet Closed สำเร็จ!`);
+            triggerToast(`✅ ซิงค์ Slot #${slotItem.slotId} พร้อมข้อมูลอุปกรณ์ IT ลง Sheet Closed สำเร็จ!`);
           }
         } catch (err) {
           if (!silent) triggerToast("❌ เกิดข้อผิดพลาดในการซิงค์: " + (err.message || err));
@@ -3602,13 +3596,12 @@
           "Slot ID", "Request ID", "Date", "Slot Status", "Job Title", "Position Type", "Replaced Name",
           "Department", "Stage", "Working Days Elapsed", "Total Recruitment Days", "Candidate", "Interview Schedule",
           "Evaluations Count", "Combined Score (1-5)", "Score %", "Result", "Hire Date", "Arrival Status", "Rejection Reason",
-          "Google Drive Link", "Laptop / PC", "Sim Card / โทรศัพท์", "Email องค์กร", "ERP Netsuite", "สถานะอุปกรณ์ IT"
+          "Google Drive Link", "Laptop / PC", "Sim Card / โทรศัพท์", "Email องค์กร", "ERP Netsuite"
         ];
         const rows = allPositionSlots.map(s => {
           const sla = getSLAInfo(s.requestDate, s.stage, s.offerSentDate);
           const duration = getRecruitmentDurationInfo(s.requestDate, s.hireDate, s.lastUpdated);
           const parentReq = requests.find(r => r.id === (s.parentRequestId || s.id)) || {};
-          const itStatus = (s.itEquipmentConfirmed || parentReq.itEquipmentConfirmed) ? "พร้อมแล้ว (Confirmed)" : (s.isItNotified ? "แจ้ง IT แล้ว" : "ยังไม่ได้แจ้ง");
           return [
             s.slotId, s.id, s.requestDate, s.slotStatus, `"${s.jobTitle}"`, s.positionType,
             `"${s.replacedEmployeeName || ''}"`, `"${s.department}"`, s.stage,
@@ -3622,8 +3615,7 @@
             `"${s.itLaptop || parentReq.itLaptop || 'ต้องการ'}"`,
             `"${s.itSimCard || parentReq.itSimCard || 'ไม่ต้องการ'}"`,
             `"${s.itEmail || parentReq.itEmail || 'ต้องการ'}"`,
-            `"${s.itNetsuite || parentReq.itNetsuite || 'ไม่ต้องการ'}"`,
-            `"${itStatus}"`
+            `"${s.itNetsuite || parentReq.itNetsuite || 'ไม่ต้องการ'}"`
           ];
         });
         const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(e => e.join(","))].join("\n");
@@ -4817,15 +4809,10 @@
                                               {s.itEmail || parentReq.itEmail || "ต้องการ"}
                                             </span>
                                           </div>
-                                          <div className="pt-0.5">
-                                            <span className={`inline-block px-1.5 py-0.2 rounded text-[9.5px] font-bold ${
-                                              s.itEquipmentConfirmed || parentReq.itEquipmentConfirmed
-                                                ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                                                : s.isItNotified
-                                                ? "bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300"
-                                                : "bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400"
-                                            }`}>
-                                              {s.itEquipmentConfirmed || parentReq.itEquipmentConfirmed ? "✅ IT พร้อมแล้ว" : (s.isItNotified ? "⏳ แจ้ง IT แล้ว" : "ยังไม่ได้แจ้ง")}
+                                          <div className="flex items-center gap-1">
+                                            <span className="font-semibold text-slate-500">ERP Netsuite:</span>
+                                            <span className={(s.itNetsuite || parentReq.itNetsuite) === "ต้องการ" ? "text-sky-600 font-bold" : "text-slate-400"}>
+                                              {s.itNetsuite || parentReq.itNetsuite || "ไม่ต้องการ"}
                                             </span>
                                           </div>
                                         </div>
