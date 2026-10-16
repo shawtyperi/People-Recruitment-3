@@ -112,7 +112,6 @@
     /* @jsxRuntime classic */
     const { useState, useEffect, useMemo, useRef } = React;
 
-    // Google Identity Services Configuration
     const GOOGLE_CLIENT_ID = "377383810576-5rntqn8dvkbrk9l9f98ujqguhlt0snp3.apps.googleusercontent.com";
     const ALLOWED_CORPORATE_DOMAIN = "@valuesourcing.co";
     const SUPER_ADMIN_EMAIL = "wanwisa.ch@valuesourcing.co";
@@ -122,7 +121,6 @@
       "contact@valuesourcing.co"
     ];
 
-    // Helper: Determine User Role & Permissions
     const getUserRoleInfo = (email) => {
       if (!email) return { role: "GUEST", label: "ผู้เยี่ยมชม", badge: "bg-slate-100 text-slate-600", isAdmin: false, isSuperAdmin: false };
       const cleanEmail = email.trim().toLowerCase();
@@ -166,7 +164,6 @@
       };
     };
 
-    // Helper: Decode Google JWT Credential Token
     const decodeGoogleCredential = (token) => {
       try {
         const base64Url = token.split('.')[1];
@@ -185,7 +182,7 @@
     const GOOGLE_SHEET_CANDIDATES_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=546067727";
     const GOOGLE_SHEET_MANPOWER_CSV_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/gviz/tq?tqx=out:csv&gid=1528284561";
     const CANDIDATES_SHEET_EDIT_URL = "https://docs.google.com/spreadsheets/d/1RwhCPu0sdV2lpzea2-2BbDoc86nfplooShYIzTkMgrw/edit?gid=546067727#gid=546067727";
-    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbwo3g6nQ5ccN-Zo9LAahy8gpEi4wiLT20O8qJ0WSfd9ax-pWpvRO4dCYIB6cOXXLwB11Q/exec";
+    const DEFAULT_APPS_SCRIPT_WEBAPP_URL = "https://script.google.com/macros/s/AKfycbxlgiN2IdhsWbK-6CzqDIUxW_oMydaWmwhggP0nALSuQSjKvoGL5s8gDA9SIrTzal5VRw/exec";
 
     const cleanCandidateName = (fullName) => {
       if (!fullName) return "";
@@ -211,7 +208,6 @@
       "ISTP", "ISFP", "ESTP", "ESFP"
     ];
 
-    // Candidate status tags configuration - Bilingual English (Thai)
     const CANDIDATE_STATUS_CONFIG = [
       { id: "Pending", label: "Pending (รอดำเนินการ)", bg: "bg-[#F3E8FF] dark:bg-purple-950/80", text: "text-[#6B21A8] dark:text-purple-200", border: "border-[#E9D5FF] dark:border-purple-800", isInactive: false, hideMapping: false },
       { id: "Compare", label: "Compare (เปรียบเทียบ)", bg: "bg-[#E0F2FE] dark:bg-sky-950/80", text: "text-[#0369A1] dark:text-sky-200", border: "border-[#BAE6FD] dark:border-sky-800", isInactive: false, hideMapping: false },
@@ -234,7 +230,6 @@
       { id: "declined_noshow", label: "Declined / No Show (สละสิทธิ์ / ไม่มาเริ่มงาน)", badge: "bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200 border-rose-300 font-extrabold ring-2 ring-rose-500/30" }
     ];
 
-    // Priority Information - Bilingual
     const getPositionPriorityInfo = (slot) => {
       const explicit = slot.priority;
       const sla = getSLAInfo(slot.requestDate, slot.stage, slot.offerSentDate);
@@ -269,7 +264,6 @@
       };
     };
 
-    // Pipeline stages - Bilingual English (Thai)
     const STAGES = [
       { id: "received", label: "Request Received (รับคำขอสรรหา)", desc: "Pending Admin/Approver Verification (คำขอรอการตรวจสอบ)" },
       { id: "manpower", label: "1. Manpower Request (1. เปิดคำขอกำลังคน)", desc: "Ready for Recruitment (พร้อมดำเนินการสรรหา)" },
@@ -353,7 +347,6 @@
       return { rangeText, totalDays, workingDays, closeDateStr };
     };
 
-    // คำนวณสถานะกำหนดการสัมภาษณ์เทียบกับวันปัจจุบัน (วันนี้, พรุ่งนี้, อีก 2-3 วันข้างหน้า)
     const getInterviewRelativeTimeInfo = (scheduleStr) => {
       if (!scheduleStr) return null;
       const match = String(scheduleStr).match(/(\d{4})-(\d{2})-(\d{2})/);
@@ -419,7 +412,6 @@
       }
     };
 
-    // Helper function to extract and normalize Google Meet URLs
     const extractGoogleMeetUrl = (item) => {
       if (!item) return "";
       if (item.googleMeetUrl && typeof item.googleMeetUrl === 'string' && item.googleMeetUrl.trim()) {
@@ -692,23 +684,22 @@
     const PROD_PERSONNEL_KEY = "hr_personnel_prod_v8";
 
     function App() {
-      const [requests, setRequests] = useState(() => {
-        const saved = localStorage.getItem(PROD_REQUESTS_KEY);
-        return saved ? JSON.parse(saved) : [];
-      });
+      // Single Source of Truth: Start fresh and rely on Google Apps Script central data
+      const [requests, setRequests] = useState([]);
 
       const [personnelList, setPersonnelList] = useState(() => {
         const saved = localStorage.getItem(PROD_PERSONNEL_KEY);
         return saved ? JSON.parse(saved) : INITIAL_PERSONNEL_LIST;
       });
 
-      const [candidatePool, setCandidatePool] = useState(() => {
-        const saved = localStorage.getItem(PROD_CANDIDATES_KEY);
-        return saved ? JSON.parse(saved) : [];
-      });
+      const [candidatePool, setCandidatePool] = useState([]);
 
       const [googleScriptUrl, setGoogleScriptUrl] = useState(() => {
         const saved = localStorage.getItem("hr_central_script_url_v7");
+        if (!saved || saved.includes("AKfycbwo3g6n") || saved.includes("AKfycbwYxBTc")) {
+          localStorage.setItem("hr_central_script_url_v7", DEFAULT_APPS_SCRIPT_WEBAPP_URL);
+          return DEFAULT_APPS_SCRIPT_WEBAPP_URL;
+        }
         return saved || DEFAULT_APPS_SCRIPT_WEBAPP_URL;
       });
 
@@ -735,15 +726,7 @@
         }
       }, [darkMode]);
 
-      useEffect(() => {
-        localStorage.setItem(PROD_REQUESTS_KEY, JSON.stringify(requests));
-      }, [requests]);
-
-      useEffect(() => {
-        localStorage.setItem(PROD_CANDIDATES_KEY, JSON.stringify(candidatePool));
-      }, [candidatePool]);
-
-      // 🔐 User Authentication Session
+      // Strictly require authentication via Google Account (@valuesourcing.co) - No hardcoded Super Admin auto-login
       const [currentUser, setCurrentUser] = useState(() => {
         const savedSession = localStorage.getItem("vs_corporate_auth_token_v4");
         if (savedSession) {
@@ -754,19 +737,12 @@
             }
           } catch (e) {}
         }
-        const devRole = getUserRoleInfo(SUPER_ADMIN_EMAIL);
-        return {
-          email: SUPER_ADMIN_EMAIL,
-          name: "Wanwisa Chumthong",
-          picture: "",
-          token: "dev-session-token",
-          ...devRole
-        };
+        return null;
       });
 
       const isAdminAuthenticated = Boolean(currentUser && (currentUser.isAdmin || currentUser.isSuperAdmin));
 
-      // View & Sub-tab controls: Admin has 1, 2, 3; Staff strictly locked to Tab 2
+      // View & Sub-tab controls: Admin has tabs 1, 2, 3; Staff locked to Tab 2
       const [adminSubTab, setAdminSubTab] = useState("kanban");
       const [manpowerTableTab, setManpowerTableTab] = useState("in_process");
       const [showLoginModal, setShowLoginModal] = useState(false);
@@ -787,7 +763,6 @@
         return null;
       }, []);
 
-      // Reliable Central Data Fetcher with CORS-free JSONP fallback
       const fetchCentralData = async (url) => {
         if (!url) return null;
         const targetUrl = url.trim();
@@ -945,6 +920,7 @@
       useEffect(() => {
         syncWorkflowStatus(true);
 
+        // Smooth polling every 2.5 seconds for instant cross-device synchronization
         const pollingInterval = setInterval(() => {
           syncWorkflowStatus(true);
         }, 2500);
@@ -969,7 +945,6 @@
         };
       }, [googleScriptUrl, broadcastBus]);
 
-      // Direct stage transmission to Central Backend
       const sendCentralSlotStageUpdate = async (slotId, stagePayload) => {
         if (!googleScriptUrl || !slotId) return;
         try {
@@ -983,6 +958,12 @@
               ...stagePayload
             })
           }).catch(() => {});
+
+          // Dual-channel GET ping fallback
+          const encodedData = encodeURIComponent(JSON.stringify(stagePayload));
+          const getFallbackUrl = `${googleScriptUrl}?action=updateSlotStage&slotId=${encodeURIComponent(slotId)}&data=${encodedData}&_t=${Date.now()}`;
+          const pingImg = new Image();
+          pingImg.src = getFallbackUrl;
 
           if (broadcastBus) {
             broadcastBus.postMessage({ type: "CENTRAL_STAGE_CHANGE", slotId, stagePayload });
@@ -1003,6 +984,11 @@
               evaluation: evalData
             })
           }).catch(() => {});
+
+          const encodedData = encodeURIComponent(JSON.stringify(evalData));
+          const getFallbackUrl = `${googleScriptUrl}?action=saveBlindEvaluation&slotId=${encodeURIComponent(slotId)}&data=${encodedData}&_t=${Date.now()}`;
+          const pingImg = new Image();
+          pingImg.src = getFallbackUrl;
 
           if (broadcastBus) {
             broadcastBus.postMessage({ type: "CENTRAL_UPDATE" });
@@ -1122,13 +1108,11 @@
         }
       }, [currentUser]);
 
-      // Search & Filtering States
       const [searchQuery, setSearchQuery] = useState("");
       const [candidateSearchQuery, setCandidateSearchQuery] = useState("");
       const [candidatePositionFilter, setCandidatePositionFilter] = useState("ALL");
       const [selectedStatusFilter, setSelectedStatusFilter] = useState("ALL");
 
-      // Requisition Queue Filters
       const [reqQueueFilter, setReqQueueFilter] = useState("ALL");
       const [reqQueueSearch, setReqQueueSearch] = useState("");
       const [selectedRequisitionDetail, setSelectedRequisitionDetail] = useState(null);
@@ -1136,12 +1120,10 @@
       const [rejectionNoteInput, setRejectionNoteInput] = useState("");
       const [isApprovingEmailSending, setIsApprovingEmailSending] = useState(false);
 
-      // Department Demand Filtering
       const [selectedMonthFilter, setSelectedMonthFilter] = useState("ALL");
       const [selectedYearFilter, setSelectedYearFilter] = useState("ALL");
       const [selectedDepartmentDetail, setSelectedDepartmentDetail] = useState(null);
 
-      // Modals
       const [showRequestModal, setShowRequestModal] = useState(false);
       const [showConfirmModal, setShowConfirmModal] = useState(false);
       const [pendingConfirmationForm, setPendingConfirmationForm] = useState(null);
