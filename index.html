@@ -608,9 +608,10 @@
       "Wealth Creation Department"
     ];
 
-    const PROD_REQUESTS_KEY = "hr_requests_prod_v6";
-    const PROD_CANDIDATES_KEY = "hr_candidates_prod_v6";
-    const PROD_PERSONNEL_KEY = "hr_personnel_prod_v6";
+    // Bumping storage namespace to v7 to purge old test overrides
+    const PROD_REQUESTS_KEY = "hr_requests_prod_v7";
+    const PROD_CANDIDATES_KEY = "hr_candidates_prod_v7";
+    const PROD_PERSONNEL_KEY = "hr_personnel_prod_v7";
 
     function App() {
       const [requests, setRequests] = useState(() => {
@@ -1118,10 +1119,52 @@
 
       const [showSheetsModal, setShowSheetsModal] = useState(false);
       const [scriptUrlInput, setScriptUrlInput] = useState(() => googleScriptUrl);
+      const [showResetConfirmModal, setShowResetConfirmModal] = useState(false);
+      const [isResettingData, setIsResettingData] = useState(false);
 
       const triggerToast = (msg) => {
         setToastMessage(msg);
         setTimeout(() => setToastMessage(""), 3500);
+      };
+
+      // ฟังก์ชันล้างข้อมูลทดสอบและรีเซ็ตระบบส่วนกลางให้พร้อมใช้งานจริง
+      const handleResetCentralData = async () => {
+        setIsResettingData(true);
+        try {
+          if (googleScriptUrl) {
+            await fetch(googleScriptUrl, {
+              method: "POST",
+              mode: "no-cors",
+              headers: { "Content-Type": "text/plain" },
+              body: JSON.stringify({ action: "resetCentralState" })
+            }).catch(() => {});
+          }
+
+          // ล้างแคชในเครื่อง
+          localStorage.removeItem(PROD_REQUESTS_KEY);
+          localStorage.removeItem(PROD_CANDIDATES_KEY);
+          localStorage.removeItem(PROD_PERSONNEL_KEY);
+
+          // ดึงข้อมูลจริงใหม่จาก Google Sheets
+          await Promise.all([
+            syncPersonnelFromGoogleSheet(false),
+            syncCandidatesFromGoogleSheet(false),
+            syncRequisitionsFromGoogleSheet()
+          ]);
+
+          // ส่งสัญญาณรีเซ็ตไปทุกหน้าต่าง
+          if (broadcastBus) {
+            broadcastBus.postMessage({ type: "CENTRAL_UPDATE" });
+          }
+
+          setShowResetConfirmModal(false);
+          setShowSheetsModal(false);
+          triggerToast("✅ ล้างข้อมูลและรีเซ็ตระบบศูนย์กลางพร้อมใช้งานแล้ว!");
+        } catch (err) {
+          triggerToast("⚠️ เกิดข้อผิดพลาดในการรีเซ็ต: " + err.message);
+        } finally {
+          setIsResettingData(false);
+        }
       };
 
       const syncPersonnelFromGoogleSheet = async (showToast = false) => {
@@ -1864,13 +1907,23 @@
 
                   {/* Admin Only: Script settings */}
                   {isAdminAuthenticated && (
-                    <button
-                      onClick={() => setShowSheetsModal(true)}
-                      className="p-2.5 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-800 transition"
-                      title="Script Settings"
-                    >
-                      ⚙️
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => setShowResetConfirmModal(true)}
+                        className="inline-flex items-center gap-1 px-3 py-2 rounded-xl text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-300 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-700 transition"
+                        title="ล้างข้อมูลทดสอบและรีเซ็ตระบบศูนย์กลาง"
+                      >
+                        <span>🧹 รีเซ็ตระบบกลาง</span>
+                      </button>
+
+                      <button
+                        onClick={() => setShowSheetsModal(true)}
+                        className="p-2.5 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 border border-slate-200/80 dark:border-slate-800 transition"
+                        title="Script Settings"
+                      >
+                        ⚙️
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -2642,122 +2695,122 @@
               </div>
             </div>
           )}
-
-          {/* Slot Detail Modal */}
-          {selectedDetailSlot && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fadeIn">
-              <div className="relative w-full max-w-xl bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 my-8">
-                <div className="flex items-start justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-                  <div>
-                    <span className="text-[10px] font-bold text-brand-600 uppercase">{selectedDetailSlot.slotId}</span>
-                    <h3 className="text-lg font-bold text-slate-900 dark:text-white flex items-center gap-2 mt-0.5">
-                      <span>{selectedDetailSlot.jobTitle}</span>
-                      {selectedDetailSlot.totalSlots > 1 && (
-                        <span className="text-xs font-extrabold px-2 py-0.5 rounded-lg bg-sky-100 dark:bg-sky-950 text-sky-700 border border-sky-300">
-                          อัตราที่ {selectedDetailSlot.slotIndex}/{selectedDetailSlot.totalSlots}
-                        </span>
-                      )}
-                    </h3>
-                    <p className="text-xs text-slate-500">{selectedDetailSlot.department}</p>
+          {/* Script Settings Modal */}
+          {showSheetsModal && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-md animate-fadeIn">
+              <div className="relative w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xl">⚙️</span>
+                    <h3 className="text-base font-extrabold text-slate-900 dark:text-white">ตั้งค่า Script และระบบศูนย์กลาง (Central Hub)</h3>
                   </div>
-                  <button onClick={() => setSelectedDetailSlot(null)} className="p-1.5 text-slate-400 hover:text-slate-600">
+                  <button onClick={() => setShowSheetsModal(false)} className="p-1 text-slate-400 hover:text-slate-600">
                     <Icon name="x" className="w-5 h-5" />
                   </button>
                 </div>
 
-                <div className="py-4 space-y-3 text-xs max-h-[70vh] overflow-y-auto pr-1">
-                  {selectedDetailSlot.candidateName ? (
-                    <div className="p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 space-y-2">
-                      <p className="font-bold text-emerald-900 dark:text-emerald-200 text-sm">👤 แคนดิเดต: {selectedDetailSlot.candidateName}</p>
-                      <p className="text-emerald-700 dark:text-emerald-300 font-medium">📞 เบอร์โทร: {selectedDetailSlot.candidatePhone || "-"}</p>
-                      {selectedDetailSlot.interviewSchedule && (
-                        <p className="text-amber-800 dark:text-amber-300 font-semibold">📅 วันเวลานัดสัมภาษณ์: {selectedDetailSlot.interviewSchedule}</p>
-                      )}
-                      {selectedDetailSlot.evaluationsCount > 0 && (
-                        <p className="text-brand-600 font-semibold">⭐ คะแนนประเมินเฉลี่ย: {selectedDetailSlot.interviewScore}/5 ({selectedDetailSlot.interviewScorePercent}%) - {selectedDetailSlot.evaluationsCount} ท่าน</p>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="p-4 text-center bg-slate-50 dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 text-slate-400 italic">
-                      ยังไม่มีผู้สมัครจับคู่ในตำแหน่งนี้
-                    </div>
-                  )}
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                      Google Apps Script Web App URL:
+                    </label>
+                    <input
+                      type="url"
+                      value={scriptUrlInput}
+                      onChange={(e) => setScriptUrlInput(e.target.value)}
+                      placeholder="https://script.google.com/macros/s/.../exec"
+                      className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 font-mono text-[11px]"
+                    />
+                  </div>
 
-                  {/* IT Requirements details without status */}
-                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-2">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      💻 อุปกรณ์และสิทธิ์ IT ที่ร้องขอ (IT &amp; Equipment Requirements)
-                    </span>
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-[10px]">
-                      <div className="p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                        <span className="text-slate-400 block">Laptop / PC:</span>
-                        <strong className="block text-xs mt-0.5 text-brand-600">{selectedDetailSlot.itLaptop || "ต้องการ"}</strong>
-                      </div>
-                      <div className="p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                        <span className="text-slate-400 block">Sim Card:</span>
-                        <strong className="block text-xs mt-0.5 text-brand-600">{selectedDetailSlot.itSimCard || "ไม่ต้องการ"}</strong>
-                      </div>
-                      <div className="p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                        <span className="text-slate-400 block">Email องค์กร:</span>
-                        <strong className="block text-xs mt-0.5 text-brand-600">{selectedDetailSlot.itEmail || "ต้องการ"}</strong>
-                      </div>
-                      <div className="p-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700">
-                        <span className="text-slate-400 block">ERP Netsuite:</span>
-                        <strong className="block text-xs mt-0.5 text-brand-600">{selectedDetailSlot.itNetsuite || "ไม่ต้องการ"}</strong>
-                      </div>
+                  <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 space-y-1.5">
+                    <span className="font-bold text-slate-800 dark:text-slate-200 block">สถานะการเชื่อมต่อปัจจุบัน:</span>
+                    <p className={`font-semibold ${syncStatus.connected ? "text-emerald-600" : "text-amber-600"}`}>
+                      {syncStatus.connected ? `🟢 เชื่อมต่อกับระบบศูนย์กลางแล้ว (ซิงค์ล่าสุด: ${syncStatus.lastSynced || "เมื่อสักครู่"})` : "⏳ กำลังเชื่อมต่อ..."}
+                    </p>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSheetsModal(false);
+                        setShowResetConfirmModal(true);
+                      }}
+                      className="px-3.5 py-2 rounded-xl text-xs font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 transition"
+                    >
+                      🧹 ล้างข้อมูลทดสอบในระบบกลาง
+                    </button>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          setScriptUrlInput(DEFAULT_APPS_SCRIPT_WEBAPP_URL);
+                          setGoogleScriptUrl(DEFAULT_APPS_SCRIPT_WEBAPP_URL);
+                          localStorage.setItem("hr_central_script_url_v6", DEFAULT_APPS_SCRIPT_WEBAPP_URL);
+                          triggerToast("รีเซ็ตเป็น URL เริ่มต้นแล้ว");
+                        }}
+                        className="px-3 py-2 rounded-xl text-slate-600 bg-slate-100 text-xs font-bold hover:bg-slate-200"
+                      >
+                        ค่าเริ่มต้น
+                      </button>
+                      <button
+                        onClick={() => {
+                          setGoogleScriptUrl(scriptUrlInput.trim());
+                          localStorage.setItem("hr_central_script_url_v6", scriptUrlInput.trim());
+                          setShowSheetsModal(false);
+                          syncWorkflowStatus(false);
+                          triggerToast("บันทึก URL ใหม่เรียบร้อยแล้ว");
+                        }}
+                        className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-bold text-xs shadow-md"
+                      >
+                        บันทึก URL
+                      </button>
                     </div>
                   </div>
-                </div>
-
-                <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex justify-end">
-                  <button onClick={() => setSelectedDetailSlot(null)} className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700">
-                    ปิด
-                  </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Delete Slot Confirmation Modal */}
-          {slotToDelete && (
+          {/* Reset Central Data Confirmation Modal */}
+          {showResetConfirmModal && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/75 backdrop-blur-md animate-fadeIn">
-              <div className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-rose-300 dark:border-rose-900 p-6 space-y-4">
-                <div className="flex items-center gap-2.5 pb-3 border-b border-slate-200 dark:border-slate-800">
-                  <span className="text-2xl">🗑️</span>
+              <div className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-amber-300 dark:border-amber-700 p-6 space-y-4">
+                <div className="flex items-center gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+                  <div className="w-11 h-11 rounded-2xl bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300 flex items-center justify-center text-xl shrink-0">
+                    🧹
+                  </div>
                   <div>
-                    <h3 className="text-base font-extrabold text-slate-900 dark:text-white">ยืนยันการลบตำแหน่ง</h3>
-                    <p className="text-xs text-slate-400">Slot #{slotToDelete.slotId} - {slotToDelete.jobTitle}</p>
+                    <h3 className="text-base font-extrabold text-slate-900 dark:text-white">ยืนยันรีเซ็ตระบบศูนย์กลาง</h3>
+                    <p className="text-xs text-slate-400">Clean & Reset Central Hub Database</p>
                   </div>
                 </div>
 
-                <div className="space-y-1.5 text-xs">
-                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300">ระบุเหตุผลในการลบ *</label>
-                  <textarea
-                    required
-                    rows="2"
-                    placeholder="เช่น ปิดโครงการ, ข้อมูลซ้ำซ้อน..."
-                    value={deletionReasonInput}
-                    onChange={(e) => setDeletionReasonInput(e.target.value)}
-                    className="w-full p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-rose-300 dark:border-rose-800"
-                  ></textarea>
+                <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-xs text-amber-900 dark:text-amber-200 space-y-1.5 leading-relaxed">
+                  <p className="font-bold">⚠️ สิ่งที่จะเกิดขึ้นเมื่อกดยืนยัน:</p>
+                  <ul className="list-disc pl-4 space-y-1 text-[11.5px]">
+                    <li>ล้างตำแหน่งที่เคยลากย้ายทดสอบในระบบส่วนกลางออกทั้งหมด</li>
+                    <li>ล้างคะแนนประเมินสัมภาษณ์ที่เคยทดสอบไว้</li>
+                    <li>ดึงข้อมูล Requisitions และ Candidates ดิบเริ่มต้นจาก Google Sheets ใหม่</li>
+                    <li>ทุกหน้าต่าง (ทั้ง Admin และ User) จะรีเซ็ตกลับมาที่จุดเริ่มต้นพร้อมกัน</li>
+                  </ul>
                 </div>
 
-                <div className="flex justify-end gap-2 pt-2">
-                  <button onClick={() => setSlotToDelete(null)} className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700">ยกเลิก</button>
+                <div className="pt-2 flex justify-end gap-2 border-t border-slate-200 dark:border-slate-800">
                   <button
-                    disabled={!deletionReasonInput.trim()}
-                    onClick={() => {
-                      sendCentralSlotDeletion(slotToDelete.slotId, deletionReasonInput.trim());
-                      setRequests(prev => prev.map(r => ({
-                        ...r,
-                        slots: (r.slots || []).filter(s => s.slotId !== slotToDelete.slotId)
-                      })).filter(r => (r.slots || []).length > 0));
-                      setSlotToDelete(null);
-                      triggerToast(`ลบ Slot #${slotToDelete.slotId} สำเร็จ`);
-                    }}
-                    className="px-5 py-2 rounded-xl text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 disabled:opacity-50"
+                    disabled={isResettingData}
+                    onClick={() => setShowResetConfirmModal(false)}
+                    className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300"
                   >
-                    ยืนยันลบ
+                    ยกเลิก
+                  </button>
+                  <button
+                    disabled={isResettingData}
+                    onClick={handleResetCentralData}
+                    className="px-5 py-2.5 rounded-xl text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 shadow-md flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {isResettingData ? "กำลังรีเซ็ต..." : "ยืนยันล้างข้อมูล & ซิงค์ใหม่"}
                   </button>
                 </div>
               </div>
